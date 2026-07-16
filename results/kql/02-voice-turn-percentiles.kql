@@ -1,0 +1,34 @@
+// ---------------------------------------------------------------------------
+// 02 - Per-stage percentiles (P50 / P90) across many turns
+// ---------------------------------------------------------------------------
+// Source: Application Insights `voice.turn` spans.
+// Answers: "On average / at the tail, how long is each stage?" Use this to show
+// the customer the median and P90 split of a voice turn. If P90 total is ~6-7s,
+// this pinpoints whether it is the tool (web search) or reasoning that dominates.
+//
+// Run this in: Application Insights -> Logs.
+// ---------------------------------------------------------------------------
+dependencies
+| where timestamp > ago(24h)
+| where name == "voice.turn"
+| extend d = customDimensions
+| extend
+    asr_ms       = todouble(d["turn.asr_ms"]),
+    reasoning_ms = todouble(d["turn.reasoning_ms"]),
+    tool_ms      = todouble(d["turn.tool_ms"]),
+    tts_first_ms = todouble(d["turn.tts_first_ms"]),
+    total_ms     = todouble(d["turn.total_ms"]),
+    tool_used    = tostring(d["turn.tool_used"])
+| summarize
+    turns          = count(),
+    with_web_tool  = countif(tool_used == "True"),
+    asr_p50        = round(percentile(asr_ms, 50)),
+    asr_p90        = round(percentile(asr_ms, 90)),
+    reasoning_p50  = round(percentile(reasoning_ms, 50)),
+    reasoning_p90  = round(percentile(reasoning_ms, 90)),
+    tool_p50       = round(percentile(tool_ms, 50)),
+    tool_p90       = round(percentile(tool_ms, 90)),
+    ttsfirst_p50   = round(percentile(tts_first_ms, 50)),
+    ttsfirst_p90   = round(percentile(tts_first_ms, 90)),
+    total_p50      = round(percentile(total_ms, 50)),
+    total_p90      = round(percentile(total_ms, 90))

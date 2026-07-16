@@ -1,0 +1,32 @@
+// ---------------------------------------------------------------------------
+// 01 - Per-turn latency breakdown (INSIDE the agent)
+// ---------------------------------------------------------------------------
+// Source: Application Insights (the backend emits one `voice.turn` span per
+// spoken turn, reconstructed from the Voice Live event stream).
+// Answers: "For each turn, where did the time go — ASR vs reasoning vs tool
+// (web/MCP) vs first-audio (TTS)?" This is the ASR + reasoning + TTS split the
+// customer asked for.
+//
+// Run this in: Application Insights  ->  Logs  (classic `dependencies` table).
+// Workspace-based App Insights: replace `dependencies` with `AppDependencies`
+// and `customDimensions` with `Properties`.
+// ---------------------------------------------------------------------------
+dependencies
+| where timestamp > ago(1h)
+| where name == "voice.turn"
+| extend d = customDimensions
+| project
+    timestamp,
+    session       = tostring(d["session.id"]),
+    turn          = toint(d["turn.index"]),
+    transcript    = tostring(d["turn.transcript"]),
+    asr_ms        = todouble(d["turn.asr_ms"]),         // speech end -> transcription done
+    reasoning_ms  = todouble(d["turn.reasoning_ms"]),   // response.created -> first token
+    tool_ms       = todouble(d["turn.tool_ms"]),        // web/MCP tool call (0 if none)
+    tts_first_ms  = todouble(d["turn.tts_first_ms"]),   // first token -> first audio
+    total_ms      = todouble(d["turn.total_ms"]),       // speech end -> response.done
+    client_wait_ms= todouble(d["turn.client_wait_ms"]), // browser mouth-to-ear (if UI marks)
+    tool_used     = tostring(d["turn.tool_used"]),
+    barge_in      = tostring(d["turn.barge_in"]),
+    total_tokens  = toint(d["turn.usage.total_tokens"])
+| order by timestamp desc

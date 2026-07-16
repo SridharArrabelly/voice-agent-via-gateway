@@ -1,0 +1,59 @@
+// ---------------------------------------------------------------------------
+// 04 - End-to-end join: browser/backend turn  <->  APIM gateway request
+// ---------------------------------------------------------------------------
+// Goal: put the APIM "gateway tax" (query 03) next to the internal turn timeline
+// (query 01) on ONE row, so you can prove APIM is not the source of the latency.
+//
+// Two correlation strategies (use whichever your setup supports):
+//
+//   A) BY REQUEST-ID  (preferred, exact)
+//      The backend stamps the APIM handshake request-id onto the `voice.session`
+//      span as customDimensions["apim.apim-request-id"] (or x-ms-request-id).
+//      APIM logs the same value as `CorrelationId` in ApiManagementGatewayLogs.
+//      NOTE: APIM only returns a request-id header when the API is configured to
+//      (e.g. a <set-header> outbound policy that echoes context.RequestId). If the
+//      value is blank in your traces, add that policy or use strategy B.
+//
+//   B) BY TIME WINDOW  (always works, approximate)
+//      A WebSocket session opens with exactly one gateway handshake request. Match
+//      the session span to the nearest gateway log row within a few seconds.
+//
+// This query is CROSS-RESOURCE: `dependencies` lives in Application Insights,
+// `ApiManagementGatewayLogs` lives in the `log-voice-agent-gateway` workspace.
+// Run it from EITHER resource and reference the other with app()/workspace():
+//   - fill in <appinsights-resource> (App Insights component name or resource id)
+//   - fill in <la-workspace> = log-voice-agent-gateway (or its resource id)
+// ---------------------------------------------------------------------------
+
+// ---- Strategy A: exact join on request-id ----
+let sessions =
+    app("<appinsights-resource>").dependencies
+    | where timestamp > ago(1h)
+    | where name == "voice.session"
+    | extend d = customDimensions
+    | project SessionTime = timestamp,
+              session_id = tostring(d["session.id"]),
+              apim_request_id = tostring(coalesce(d["apim.apim-request-id"], d["apim.x-ms-request-id"]));
+let gateway =
+    workspace("<la-workspace>").ApiManagementGatewayLogs
+    | where TimeGenerated > ago(1h)
+    | where ApiId == "voice-agent"
+    | extend ApimOverheadMs = TotalTime - BackendTime;
+sessions
+| join kind=inner gateway on $left.apim_request_id == $right.CorrelationId
+| project SessionTime, session_id, CorrelationId, ClientProtocol,
+          BackendTime, TotalTime, ApimOverheadMs, ResponseCode
+
+// ---- Strategy B: time-window join (uncomment if request-id is blank) ----
+// let sessions =
+//     app("<appinsights-resource>").dependencies
+//     | where timestamp > ago(1h) | where name == "voice.session"
+//     | project SessionTime = timestamp, session_id = tostring(customDimensions["session.id"]);
+// let gateway =
+//     workspace("<la-workspace>").ApiManagementGatewayLogs
+//     | where TimeGenerated > ago(1h) | where ApiId == "voice-agent"
+//     | extend ApimOverheadMs = TotalTime - BackendTime;
+// sessions
+// | join kind=inner gateway on $left.session_id == $right.session_id  // no shared key -> use time
+// | where abs(datetime_diff('second', SessionTime, TimeGenerated)) <= 5
+// | project SessionTime, session_id, BackendTime, TotalTime, ApimOverheadMs, ResponseCode

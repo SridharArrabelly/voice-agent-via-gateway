@@ -17,6 +17,16 @@
   let ws = null, audioCtx = null, workletNode = null, micStream = null, source = null;
   let playCtx = null, playHead = 0, activeSources = [];
   let curAgentMsg = null, curUserMsg = null;
+  let turnAudioStarted = false; // reset per agent turn; gates the first-audio mark
+
+  // Post a browser-only timing mark to the backend. These `client.*` frames are
+  // intercepted server-side (never forwarded to Voice Live) and recorded on the
+  // per-turn span so App Insights shows true mouth-to-ear latency + barge-in.
+  function mark(name) {
+    if (ws && ws.readyState === WebSocket.OPEN) {
+      ws.send(JSON.stringify({ type: "client." + name, t: Date.now() }));
+    }
+  }
 
   function setStatus(text, cls) { statusEl.textContent = text; dot.className = "dot " + cls; }
 
@@ -136,13 +146,21 @@
           break;
         case "input_audio_buffer.speech_started":
           stopPlayback(); // barge-in
+          if (turnAudioStarted) mark("barge_in"); // user cut in over agent audio
           curAgentMsg = null;
+          turnAudioStarted = false;
+          break;
+        case "input_audio_buffer.speech_stopped":
+          mark("speech_stopped"); // user finished — clock starts for mouth-to-ear
           break;
         case "conversation.item.input_audio_transcription.completed":
           if (m.transcript) addMsg("user", "You", m.transcript.trim());
           break;
         case "response.audio.delta":
-          if (m.delta) playChunk(b64ToInt16(m.delta));
+          if (m.delta) {
+            if (!turnAudioStarted) { turnAudioStarted = true; mark("first_audio_played"); }
+            playChunk(b64ToInt16(m.delta));
+          }
           break;
         case "response.audio_transcript.delta":
         case "response.text.delta":
@@ -152,6 +170,7 @@
           break;
         case "response.done":
           curAgentMsg = null;
+          turnAudioStarted = false;
           break;
         case "error":
           sys("Server error: " + JSON.stringify(m.error || m));

@@ -1,0 +1,32 @@
+// ---------------------------------------------------------------------------
+// 03 - APIM gateway overhead (the "gateway tax")
+// ---------------------------------------------------------------------------
+// Source: Log Analytics workspace `log-voice-agent-gateway` (rg-foundry-sweden)
+//         table `ApiManagementGatewayLogs` (diagnostic setting `gateway-impact`,
+//         Dedicated destination).
+// Answers: "How much latency does APIM itself add, separate from the backend?"
+//   ApimOverheadMs = TotalTime - BackendTime  (time spent inside APIM, not Foundry)
+//
+// NOTE for WebSocket APIs: the voice stream is ONE long-lived connection, so the
+// gateway logs the initial handshake/upgrade request (and its duration), not each
+// audio frame. The per-turn media latency lives in the App Insights `voice.turn`
+// spans (queries 01/02); this query proves the *connection-time* gateway cost.
+//
+// Run this in: Log Analytics workspace `log-voice-agent-gateway` -> Logs.
+// ---------------------------------------------------------------------------
+ApiManagementGatewayLogs
+| where TimeGenerated > ago(1h)
+| where ApiId == "voice-agent"
+| extend ApimOverheadMs = TotalTime - BackendTime
+| project
+    TimeGenerated,
+    CorrelationId,          // <- cross-hop join key (see query 04)
+    OperationId,
+    Method,
+    Url,
+    ResponseCode,
+    ClientProtocol,         // e.g. WebSocket / HTTP/1.1
+    BackendTime,            // time waiting on Foundry Voice Live
+    TotalTime,              // total time in APIM
+    ApimOverheadMs          // APIM's own added latency
+| order by TimeGenerated desc

@@ -14,6 +14,7 @@ import asyncio
 import json
 import os
 import time
+import uuid
 from pathlib import Path
 
 import websockets
@@ -60,6 +61,181 @@ async def healthz():
     return {"status": "ok", "gateway": GATEWAY_WS_URL}
 
 
+# APIM (and Foundry) return one of these request-id headers on the WS handshake.
+# We stamp whatever is present onto the session span so an App Insights trace can be
+# joined to the matching row in `ApiManagementGatewayLogs` (column CorrelationId /
+# RequestId) — the cross-hop correlation key.
+_APIM_ID_HEADERS = (
+    "apim-request-id",
+    "x-ms-request-id",
+    "request-id",
+    "x-ms-correlation-request-id",
+)
+
+
+class TurnProfiler:
+    """Reconstructs a per-turn latency timeline from the Voice Live event stream.
+
+    A "turn" spans from the user's speech (or the response being created) to
+    `response.done`. For each turn we emit a child span `voice.turn` under the
+    session span, carrying stage durations (ASR, reasoning, tool, first-audio) plus
+    the client-perceived mouth-to-ear wait when the browser posts `client.*` marks.
+    Stage deltas use a monotonic clock; span start/end use epoch time so the App
+    Insights end-to-end transaction view renders a correct waterfall.
+    """
+
+    _STAGE_EVENTS = {
+        "input_audio_buffer.speech_started",
+        "input_audio_buffer.speech_stopped",
+        "input_audio_buffer.committed",
+        "conversation.item.input_audio_transcription.completed",
+        "response.created",
+        "response.output_item.added",
+        "response.output_item.done",
+        "response.text.delta",
+        "response.audio_transcript.delta",
+        "response.audio.delta",
+        "response.audio.done",
+        "response.done",
+    }
+
+    def __init__(self, tracer, session_span, session_id: str):
+        self._tracer = tracer
+        self._parent_ctx = trace.set_span_in_context(session_span)
+        self._session_id = session_id
+        self._index = 0
+        self._reset()
+
+    def _reset(self) -> None:
+        self._active = False
+        self._start_epoch_ns = None
+        self._m: dict[str, float] = {}          # stage -> perf_counter seconds
+        self._transcript = ""
+        self._agent_text = ""
+        self._tool_used = False
+        self._usage: dict | None = None
+        self._client_marks: dict[str, float] = {}  # mark -> browser epoch ms
+
+    def _mark(self, name: str) -> None:
+        self._m.setdefault(name, time.perf_counter())
+
+    def _begin(self) -> None:
+        if not self._active:
+            self._active = True
+            self._start_epoch_ns = time.time_ns()
+
+    def note_client_mark(self, mark: str, client_ts_ms: float) -> None:
+        self._begin()
+        self._client_marks[mark] = client_ts_ms
+
+    def on_audio_frame(self) -> None:
+        """First binary audio frame of a turn = TTS audio started arriving."""
+        if self._active:
+            self._mark("first_audio")
+
+    def on_text_event(self, obj: dict) -> None:
+        etype = obj.get("type")
+        if etype not in self._STAGE_EVENTS:
+            return
+        if etype == "input_audio_buffer.speech_started":
+            self._begin()
+            self._mark("speech_started")
+        elif etype == "input_audio_buffer.speech_stopped":
+            self._begin()
+            self._mark("speech_stopped")
+        elif etype == "input_audio_buffer.committed":
+            self._begin()
+            self._mark("committed")
+        elif etype == "conversation.item.input_audio_transcription.completed":
+            self._begin()
+            self._mark("asr")
+            self._transcript = str(obj.get("transcript", ""))[:400]
+        elif etype == "response.created":
+            self._begin()
+            self._mark("created")
+        elif etype == "response.output_item.added":
+            item = obj.get("item") or {}
+            if item.get("type") == "mcp_call":
+                self._tool_used = True
+                self._mark("tool_start")
+        elif etype == "response.output_item.done":
+            item = obj.get("item") or {}
+            if item.get("type") == "mcp_call":
+                self._mark("tool_end")
+        elif etype in ("response.text.delta", "response.audio_transcript.delta"):
+            self._mark("first_token")
+            delta = obj.get("delta")
+            if delta and len(self._agent_text) < 400:
+                self._agent_text += str(delta)
+        elif etype == "response.audio.delta":
+            # Audio streams as base64 JSON deltas (not binary frames) on this path,
+            # so the first one marks TTS audio start.
+            self._mark("first_token")   # audio-only turns have no text delta
+            self._mark("first_audio")
+        elif etype == "response.audio.done":
+            self._mark("audio_done")
+        elif etype == "response.done":
+            self._mark("done")
+            resp = obj.get("response") or {}
+            self._usage = resp.get("usage")
+            self._emit()
+
+    @staticmethod
+    def _delta_ms(m: dict, end: str, start: str) -> float | None:
+        if end in m and start in m:
+            return round((m[end] - m[start]) * 1000, 1)
+        return None
+
+    def _emit(self) -> None:
+        if not self._active or self._start_epoch_ns is None:
+            self._reset()
+            return
+        self._index += 1
+        m = self._m
+        ref_start = "speech_stopped" if "speech_stopped" in m else (
+            "committed" if "committed" in m else (
+                "speech_started" if "speech_started" in m else "created"))
+
+        span = self._tracer.start_span(
+            "voice.turn", context=self._parent_ctx, start_time=self._start_epoch_ns
+        )
+        try:
+            span.set_attribute("session.id", self._session_id)
+            span.set_attribute("turn.index", self._index)
+            if self._transcript:
+                span.set_attribute("turn.transcript", self._transcript)
+            if self._agent_text:
+                span.set_attribute("turn.agent_transcript", self._agent_text[:400])
+            span.set_attribute("turn.tool_used", self._tool_used)
+
+            stages = {
+                "asr_ms": self._delta_ms(m, "asr", ref_start),
+                "reasoning_ms": self._delta_ms(m, "first_token", "created"),
+                "tool_ms": self._delta_ms(m, "tool_end", "tool_start"),
+                "tts_first_ms": self._delta_ms(m, "first_audio", "first_token"),
+                "total_ms": self._delta_ms(m, "done", ref_start),
+            }
+            for k, v in stages.items():
+                if v is not None:
+                    span.set_attribute(f"turn.{k}", v)
+
+            ss, fa = self._client_marks.get("speech_stopped"), self._client_marks.get("first_audio_played")
+            if ss is not None and fa is not None:
+                span.set_attribute("turn.client_wait_ms", round(fa - ss, 1))
+            if "barge_in" in self._client_marks:
+                span.set_attribute("turn.barge_in", True)
+
+            if isinstance(self._usage, dict):
+                for tk in ("total_tokens", "input_tokens", "output_tokens"):
+                    if tk in self._usage:
+                        span.set_attribute(f"turn.usage.{tk}", self._usage[tk])
+
+            span.add_event("voice.turn.stages", {k: v for k, v in stages.items() if v is not None})
+        finally:
+            span.end(end_time=time.time_ns())
+        self._reset()
+
+
 @app.websocket("/realtime")
 async def realtime(client: WebSocket):
     """Relay a browser WS session to the Voice Live agent through APIM.
@@ -72,10 +248,13 @@ async def realtime(client: WebSocket):
     peer = f"{client.client.host}:{client.client.port}" if client.client else "unknown"
 
     with tracer.start_as_current_span("voice.session") as span:
+        session_id = uuid.uuid4().hex
+        span.set_attribute("session.id", session_id)
         span.set_attribute("net.peer", peer)
         span.set_attribute("gateway.url", GATEWAY_WS_URL)
         started = time.perf_counter()
         counters = {"client_to_upstream": 0, "audio_deltas": 0, "server_events": 0}
+        profiler = TurnProfiler(tracer, span, session_id)
 
         connect_t0 = time.perf_counter()
         try:
@@ -85,6 +264,15 @@ async def realtime(client: WebSocket):
             span.set_status(trace.Status(trace.StatusCode.ERROR, "upstream connect failed"))
             await client.close(code=1011, reason=f"upstream connect failed: {exc}"[:120])
             return
+        # Capture the APIM handshake request-id → cross-hop join key with the gateway logs.
+        try:
+            hs_headers = upstream.response.headers
+            for h in _APIM_ID_HEADERS:
+                val = hs_headers.get(h)
+                if val:
+                    span.set_attribute(f"apim.{h}", val)
+        except Exception:
+            pass
         span.add_event(
             "upstream.connected",
             {"connect_ms": round((time.perf_counter() - connect_t0) * 1000, 1)},
@@ -94,6 +282,11 @@ async def realtime(client: WebSocket):
             try:
                 while True:
                     msg = await client.receive_text()
+                    # Intercept browser-only control frames (client.* marks): record
+                    # them on the turn timeline but never forward them upstream —
+                    # Voice Live would reject unknown message types and close the socket.
+                    if _handle_client_mark(msg, profiler):
+                        continue
                     counters["client_to_upstream"] += 1
                     await upstream.send(msg)
             except WebSocketDisconnect:
@@ -104,10 +297,11 @@ async def realtime(client: WebSocket):
                 async for msg in upstream:
                     if isinstance(msg, bytes):
                         counters["audio_deltas"] += 1
+                        profiler.on_audio_frame()
                         await client.send_bytes(msg)
                     else:
                         counters["server_events"] += 1
-                        _record_server_event(span, msg, counters)
+                        _record_server_event(span, msg, counters, profiler)
                         await client.send_text(msg)
             except websockets.ConnectionClosed:
                 pass
@@ -144,12 +338,36 @@ _TRACE_EVENT_TYPES = {
 }
 
 
-def _record_server_event(span, raw: str, counters: dict) -> None:
+def _handle_client_mark(raw: str, profiler: "TurnProfiler") -> bool:
+    """Intercept a browser `client.*` control frame. Returns True if handled
+    (and therefore must NOT be forwarded upstream)."""
+    if '"client.' not in raw:
+        return False
+    try:
+        obj = json.loads(raw)
+    except (json.JSONDecodeError, TypeError):
+        return False
+    etype = obj.get("type", "")
+    if not isinstance(etype, str) or not etype.startswith("client."):
+        return False
+    mark = etype.split(".", 1)[1]  # e.g. "speech_stopped", "first_audio_played", "barge_in"
+    ts = obj.get("t")
+    try:
+        ts = float(ts) if ts is not None else time.time() * 1000
+    except (TypeError, ValueError):
+        ts = time.time() * 1000
+    profiler.note_client_mark(mark, ts)
+    return True
+
+
+def _record_server_event(span, raw: str, counters: dict, profiler: "TurnProfiler | None" = None) -> None:
     """Parse an upstream text frame and record interesting events on the span."""
     try:
         obj = json.loads(raw)
     except (json.JSONDecodeError, TypeError):
         return
+    if profiler is not None:
+        profiler.on_text_event(obj)
     etype = obj.get("type")
     if not etype:
         return

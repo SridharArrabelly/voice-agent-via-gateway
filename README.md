@@ -162,6 +162,37 @@ Each session span carries:
 | `voice.error` (event, sets span error status) | any server-side Voice Live error |
 | `session.duration_ms`, `session.client_messages`, `session.audio_deltas`, `session.server_events` | per-session totals |
 | `session.closed` (event) | final counters when the socket closes |
+| `apim.apim-request-id` / `apim.x-ms-request-id` | APIM handshake request-id — cross-hop join key to `ApiManagementGatewayLogs` |
+
+### End-to-end per-turn trace (where the latency actually goes)
+
+For each spoken turn the backend emits a child span **`voice.turn`** under the
+session, reconstructed from the Voice Live event stream. It breaks the turn into
+the same stages as `voice_profile.py`, but live and correlated end-to-end:
+
+| Attribute | Stage |
+|---|---|
+| `turn.asr_ms` | speech end → transcription done (ASR) |
+| `turn.reasoning_ms` | `response.created` → first token (model thinking) |
+| `turn.tool_ms` | web / MCP tool call (0 if the agent didn't search) |
+| `turn.tts_first_ms` | first token → first audio (TTS start) |
+| `turn.total_ms` | speech end → `response.done` |
+| `turn.client_wait_ms` | **true browser mouth-to-ear** (from client marks) |
+| `turn.barge_in` | user cut in over agent audio |
+| `turn.transcript` / `turn.agent_transcript` / `turn.usage.*` | text + token usage |
+
+The browser posts lightweight `client.*` marks (`speech_stopped`,
+`first_audio_played`, `barge_in`); the backend intercepts them (they are **never**
+forwarded to Voice Live) and records them on the turn. This gives the customer a
+single App Insights transaction spanning **browser → backend → APIM → agent →
+Voice Live → back**, plus ready-made **KQL in [`results/kql/`](results/kql/)**:
+
+- `01`/`02` — per-turn stage split + P50/P90 (App Insights)
+- `03` — APIM gateway overhead `TotalTime − BackendTime` (`ApiManagementGatewayLogs`)
+- `04` — join the two hops on the APIM request-id (or by time window)
+
+APIM gateway logs flow to the Log Analytics workspace **`log-voice-agent-gateway`**
+(rg-foundry-sweden) via diagnostic setting `gateway-impact`.
 
 View them in the Application Insights resource under **Transaction search** /
 **Investigate → Performance**, or query with KQL, e.g.:
