@@ -145,6 +145,7 @@ User** on the Foundry resource.
 | `scripts/bench_connect.py` | **WebSocket handshake decomposition** (DNS/TCP/TLS/WS-upgrade) + per-turn ttfr: direct-to-Foundry vs via-APIM |
 | `scripts/test_qa.py` | runs a question set through the agent in voice + text; records answers + latency |
 | `scripts/voice_profile.py` | **pipeline stage profiler**: feeds a spoken WAV and times ASR / reasoning / tool / TTS per turn (APIM vs direct) |
+| `scripts/trace_report.py` | **one-command end-to-end report**: drives turns through the backend, then prints `voice.turn` stage latency + APIM gateway overhead from telemetry |
 
 ## Documentation
 

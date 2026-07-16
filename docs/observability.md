@@ -56,6 +56,18 @@ A real turn for "What is the capital of Australia?":
 
 ## Querying it
 
+**One command** (generates turns through the backend, then prints the tables):
+
+```bash
+uv run python backend/app.py          # terminal 1: start the proxy
+uv run python scripts/trace_report.py --generate 4 --minutes 30   # terminal 2
+```
+
+It drives N turns, waits for telemetry export, then prints per-turn `voice.turn` stage
+latency (ASR / reasoning / tool / TTS-first / total / mouth-to-ear / tokens) with a median
+row, plus the APIM gateway-overhead table. Use `--report-only` to just re-query without
+generating new traffic. Reads the workspace IDs from `.env`.
+
 Fastest visual: App Insights → **Transaction search** → pick a `voice.session` → the
 end-to-end transaction view renders the `voice.turn` children as a waterfall.
 
