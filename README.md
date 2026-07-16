@@ -157,6 +157,22 @@ Deeper topics live in focused docs so this page stays short:
 | [docs/observability.md](docs/observability.md) | App Insights / OpenTelemetry tracing, per-turn `voice.turn` stage spans, browser mouth-to-ear marks, cross-hop correlation. |
 | [results/kql/](results/kql/) | Ready-made KQL for per-turn breakdown, gateway overhead, and joining the hops (+ one-time setup). |
 
+### Measure the latency yourself (one command)
+
+With the observability `.env` values set (`APPINSIGHTS_WORKSPACE_ID`,
+`LOG_ANALYTICS_WORKSPACE_ID`) and `az login` done:
+
+```powershell
+uv run python backend/app.py                              # terminal 1: proxy
+uv run python scripts/trace_report.py --generate 4        # terminal 2: drive + report
+```
+
+It runs N turns through the backend, waits for telemetry export, then prints a per-turn
+`voice.turn` stage table (ASR / reasoning / tool / TTS-first / total / mouth-to-ear /
+tokens) with a median row, plus the APIM gateway-overhead table
+(`TotalTime − BackendTime` on the WS upgrade). Use `--report-only` to re-query without
+generating traffic. Details in [docs/observability.md](docs/observability.md).
+
 **TL;DR on latency:** APIM is **not** the bottleneck — it adds ~200 ms **once** at connect
 and ≈0 per turn; the dominant cost is model generation. See
 [docs/benchmarks.md](docs/benchmarks.md) for the numbers.
