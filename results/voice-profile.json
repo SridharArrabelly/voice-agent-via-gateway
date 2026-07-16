@@ -1,0 +1,102 @@
+{
+  "generated_utc": "2026-07-16T20:24:04.842110+00:00",
+  "agent": "voice-mode-agent",
+  "wav": "question-capital-australia.wav",
+  "audio_seconds": 2.6245,
+  "runs": {
+    "apim": [
+      {
+        "speaking_ms": 2624.5,
+        "asr_ms": 952.9347000061534,
+        "model_start_ms": 953.0551000061678,
+        "reasoning_ms": 3053.323400003137,
+        "tool_ms": 1802.2286000050372,
+        "tts_first_ms": 0.3467999922577292,
+        "tts_playout_ms": 401.8781000049785,
+        "total_ms": 4409.150200008298,
+        "tool_used": true,
+        "audio_deltas": 6,
+        "transcript": "What is the capital of Australia?",
+        "answer": "The capital of Australia is **Canberra**.",
+        "errors": []
+      },
+      {
+        "speaking_ms": 2624.5,
+        "asr_ms": 955.2078999986406,
+        "model_start_ms": 960.3379000036512,
+        "reasoning_ms": 3251.58100000408,
+        "tool_ms": 1904.9896000069566,
+        "tts_first_ms": 0.25779999850783497,
+        "tts_playout_ms": 202.55809999071062,
+        "total_ms": 4611.752700002398,
+        "tool_used": true,
+        "audio_deltas": 6,
+        "transcript": "What is the capital of Australia?",
+        "answer": "The capital of Australia is **Canberra**.",
+        "errors": []
+      },
+      {
+        "speaking_ms": 2624.5,
+        "asr_ms": 996.4374999981374,
+        "model_start_ms": 996.4731000072788,
+        "reasoning_ms": 2857.4765999946976,
+        "tool_ms": 1811.9500000029802,
+        "tts_first_ms": 213.87789999425877,
+        "tts_playout_ms": 199.10979999986012,
+        "total_ms": 4463.634900006582,
+        "tool_used": true,
+        "audio_deltas": 6,
+        "transcript": "What is the capital of Australia?",
+        "answer": "The capital of Australia is **Canberra**.",
+        "errors": []
+      }
+    ],
+    "direct": [
+      {
+        "speaking_ms": 2624.5,
+        "asr_ms": 1161.6570000041975,
+        "model_start_ms": 1163.9129999966826,
+        "reasoning_ms": 3188.3383999957005,
+        "tool_ms": 1889.4733000051929,
+        "tts_first_ms": 0.13520001084543765,
+        "tts_playout_ms": 398.64299999317154,
+        "total_ms": 4951.967799992417,
+        "tool_used": true,
+        "audio_deltas": 6,
+        "transcript": "What is the capital of Australia?",
+        "answer": "The capital of Australia is **Canberra**.",
+        "errors": []
+      },
+      {
+        "speaking_ms": 2624.5,
+        "asr_ms": 1356.1371999967378,
+        "model_start_ms": 1359.871499997098,
+        "reasoning_ms": 3142.3431000002893,
+        "tool_ms": 1818.469500009087,
+        "tts_first_ms": 0.16239999968092889,
+        "tts_playout_ms": 390.28150000376627,
+        "total_ms": 5086.3128999917535,
+        "tool_used": true,
+        "audio_deltas": 6,
+        "transcript": "What is the capital of Australia?",
+        "answer": "The capital of Australia is **Canberra**.",
+        "errors": []
+      },
+      {
+        "speaking_ms": 2624.5,
+        "asr_ms": 1180.125400001998,
+        "model_start_ms": 1187.2292000043672,
+        "reasoning_ms": 3530.457499990007,
+        "tool_ms": 1843.6325999937253,
+        "tts_first_ms": 1.0869000107049942,
+        "tts_playout_ms": 388.4825999994064,
+        "total_ms": 5301.216100007878,
+        "tool_used": true,
+        "audio_deltas": 6,
+        "transcript": "What is the capital of Australia?",
+        "answer": "The capital of Australia is **Canberra**.",
+        "errors": []
+      }
+    ]
+  }
+}

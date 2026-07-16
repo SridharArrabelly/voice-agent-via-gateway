@@ -99,6 +99,7 @@ User** on the Foundry resource.
 | `scripts/bench.py` | **Voice Live 2×2 latency matrix**: {APIM gateway, direct SDK} × {voice, text}, same agent |
 | `scripts/bench_connect.py` | **WebSocket handshake decomposition** (DNS/TCP/TLS/WS-upgrade) + per-turn ttfr: direct-to-Foundry vs via-APIM |
 | `scripts/test_qa.py` | runs a question set through the agent in voice + text; records answers + latency |
+| `scripts/voice_profile.py` | **pipeline stage profiler**: feeds a spoken WAV and times ASR / reasoning / tool / TTS per turn (APIM vs direct) |
 
 ## Verify without the browser
 
@@ -110,6 +111,28 @@ uv run python scripts/test_gateway.py
 ```
 
 Each prints the agent transcript and the number of audio deltas received.
+
+## Profile where a voice turn's latency goes
+
+`scripts/voice_profile.py` feeds a **spoken question (WAV)** into the agent and reconstructs
+the pipeline timeline from the Voice Live event stream, so you can see whether a slow turn is
+**ASR**, **model reasoning**, a **web/tool call**, or **TTS** — and how much (if any) the APIM
+gateway adds. Meant to be handed to anyone (incl. the customer) to run against their own agent.
+
+```powershell
+uv run python scripts/voice_profile.py                    # APIM path, bundled sample WAV
+uv run python scripts/voice_profile.py --path direct      # bypass APIM (needs: az login)
+uv run python scripts/voice_profile.py --path both --iters 3   # side-by-side + APIM overhead
+uv run python scripts/voice_profile.py --wav path\to\your-question.wav   # your own audio
+```
+
+- Any mono/stereo 16-bit PCM WAV works (auto-downmixed + resampled to 24 kHz); a sample is
+  bundled at `scripts/assets/`. Record a real user question to profile your own traffic.
+- Enables `input_audio_transcription` (default model `azure-speech`; override with
+  `INPUT_TRANSCRIPTION_MODEL`) so ASR timing is captured.
+- Writes `results/voice-profile.{md,json}`. Example finding: even a trivial question
+  (“capital of Australia”) spends **~1.3 s in ASR** and **~3 s in reasoning (of which ~1.8 s
+  is the web tool)**; TTS is fast, and **APIM overhead is ≈0 per stage**.
 
 ## Notes / caveats (prototype)
 
