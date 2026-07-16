@@ -86,6 +86,40 @@ query placeholders).
 > workspace's **`AppDependencies`** table (with the **`Properties`** column) instead of the
 > classic `dependencies` / `customDimensions`. Both variants are in the `.kql` files.
 
+## Splitting by mode (agent vs model)
+
+If you also run the optional **model-mode** endpoint (native `gpt-realtime`, see the README
+["two modes"](../README.md#voice-live-has-two-modes-agent-vs-model-this-trips-people-up)
+section), every span carries a **`voice.mode`** attribute (`agent` or `model`) so you can
+compare the two head-to-head.
+
+**One command — drive both routes and print a per-mode comparison:**
+
+```bash
+uv run python scripts/trace_report.py --generate 2 --mode both   # or --mode agent | model
+```
+
+The report groups `voice.turn` rows by mode and prints a **per-mode median** line, and the
+gateway-overhead table matches both APIM APIs (`voice-agent` + `voice-agent-model`) split by
+mode.
+
+**Split any KQL by mode** — add the attribute as a column (workspace-based App Insights):
+
+```kusto
+AppDependencies
+| where Name == "voice.turn"
+| extend mode = tostring(Properties["voice.mode"])
+| summarize p50_total=percentile(toreal(Properties["turn.total_ms"]), 50),
+            p50_reason=percentile(toreal(Properties["turn.reasoning_ms"]), 50),
+            p50_tts=percentile(toreal(Properties["turn.tts_first_ms"]), 50)
+    by mode
+```
+
+**How to read it:** model mode typically shows **lower reasoning + TTS-first** latency
+(native speech-to-speech, no STT→text→TTS cascade); agent mode is where **tools, knowledge,
+state, and Custom Neural Voice** live. That is the capability-vs-latency trade, quantified.
+(CNV is agent-mode only — native models expose built-in voices only.)
+
 ## Log-based proof of the APIM tax (for the customer)
 
 To show the customer exactly how much APIM adds, independent of the app:

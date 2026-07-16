@@ -183,25 +183,53 @@ So the real trade for a single Voice Live session is **managed agent + tools** (
 once** today. If you need tool calls in model mode, you re-declare them as function-calling
 `tools` in the `session.update` and run the tool logic in your own client/proxy.
 
-> **Want to switch to `gpt-realtime`?** (1) Deploy a `gpt-realtime` model in the Foundry
-> resource, (2) change the rewrite-uri from `agent-name=…&agent-project-name=…` to
-> `model=gpt-realtime`, (3) have the browser send a `session.update` with `instructions`,
-> `voice`, VAD settings, and any function-calling `tools` (since there's no agent to supply
-> them). Not yet implemented here — a planned next step.
+> **⚠️ Using a Custom Neural Voice (CNV)? You must stay in agent mode.** A CNV
+> (`VOICE_TYPE=azure-custom`) is a swap in the **cascaded TTS stage**, which only exists in
+> **agent mode**. Native `gpt-realtime` has no separate TTS stage to swap — it only offers
+> its **built-in** voices — so **CNV is impossible in model mode**. If your production
+> requirement is a custom brand voice, agent mode is the answer; the model-mode endpoint
+> below is then only useful as an explanatory / A-B latency demo.
+
+### Try both modes side-by-side (this repo ships both)
+
+Both modes run **in parallel** with zero collision — a separate APIM API
+(`voice-agent-model`) + subscription + backend route (`/realtime-model`), selected per WS
+session at connect. Agent mode is unchanged; model mode is purely additive and opt-in.
+
+1. **Enable model mode** — set `GATEWAY_WS_URL_MODEL` + `APIM_SUBSCRIPTION_KEY_MODEL` in
+   `.env` (see `.env.example`; leave them unset to run agent-only). The APIM policy for the
+   model API lives in `infra/policy-model.xml` (rewrite-uri to `model=gpt-realtime-…`).
+2. **In the browser** — the UI shows an **Agent ↔ gpt-realtime** toggle (enabled only when
+   the backend reports model mode available via `GET /modes`). Pick one, then Connect.
+3. **Measure both at once** —
+   ```bash
+   uv run python scripts/trace_report.py --generate 2 --mode both
+   ```
+   drives turns through **both** routes and prints a per-mode median comparison (ASR /
+   reasoning / TTS-first / total, plus the APIM gateway overhead per mode). Use
+   `--mode agent` or `--mode model` to isolate one. Every `voice.turn` and `voice.session`
+   span is tagged `voice.mode`, so you can also split any KQL by mode. See
+   [docs/observability.md](docs/observability.md#splitting-by-mode-agent-vs-model).
+
+> **How to read it:** expect model mode to show **lower reasoning + TTS-first latency**
+> (native speech-to-speech, no cascade) while agent mode carries the **tool/knowledge/state**
+> and **CNV** capabilities. That latency-vs-capability gap is exactly the trade above, made
+> measurable.
 
 ## Layout
 
 | Path | Purpose |
 |------|---------|
-| `backend/app.py` | FastAPI backend: serves `web/` + proxies `/realtime` WS to APIM (holds sub-key) |
+| `backend/app.py` | FastAPI backend: serves `web/` + proxies `/realtime` (agent) and `/realtime-model` (model) WS to APIM (holds sub-keys) |
 | `backend/telemetry.py` | Application Insights / OpenTelemetry setup (Azure Monitor distro) |
 | `pyproject.toml` / `uv.lock` | uv project + pinned dependencies |
 | `.env` / `.env.example` | all runtime config (secrets in `.env`, git-ignored; template committed) |
-| `web/index.html`, `styles.css` | UI shell |
+| `web/index.html`, `styles.css` | UI shell (incl. Agent ↔ gpt-realtime mode toggle) |
 | `web/app.js` | WebSocket + mic capture (PCM16 @24 kHz) + streaming playback + barge-in |
 | `web/pcm-worklet.js` | AudioWorklet that converts mic frames to PCM16 |
 | `web/config.js` | optional frontend overrides (no secrets; same-origin by default) |
-| `infra/policy.xml` | APIM `onHandshake` policy (MI auth + rewrite-uri) |
+| `infra/policy.xml` | APIM `onHandshake` policy for **agent mode** (MI auth + rewrite-uri) |
+| `infra/policy-model.xml` | APIM `onHandshake` policy for **model mode** (MI auth + rewrite-uri to `model=…`) |
 | `scripts/test_proxy.py` | end-to-end test **through the Python backend** (text turn) |
 | `scripts/test_gateway.py` | end-to-end test **directly through APIM** (text turn) |
 | `scripts/sdk_test.py` | Python `azure-ai-voicelive` reference (direct to Voice Live) |

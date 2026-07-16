@@ -18,6 +18,14 @@
       <span id="status">Disconnected</span>
     </div>
 
+    <div class="mode-row">
+      <span class="mode-label">Mode:</span>
+      <label class="mode-opt"><input type="radio" name="mode" value="agent" checked />
+        <b>Agent</b> <span class="mode-hint">cascaded · tools · CNV</span></label>
+      <label class="mode-opt" id="modelOpt"><input type="radio" name="mode" value="model" />
+        <b>gpt-realtime</b> <span class="mode-hint">native S2S · lowest latency</span></label>
+    </div>
+
     <div class="controls">
       <button id="connectBtn" class="primary">Start conversation</button>
       <button id="stopBtn" class="ghost" disabled>End</button>

@@ -38,7 +38,17 @@ def configure(app=None) -> bool:
         # Instrument FastAPI so each HTTP request is traced too.
         from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
 
-        FastAPIInstrumentor.instrument_app(app)
+        # Suppress the per-frame ASGI "websocket send/receive" child spans. On the
+        # audio relay each base64 audio delta is one WS frame, so leaving these on
+        # emits hundreds of empty 0 ms spans per turn — pure noise that also floods
+        # the BatchSpanProcessor queue and can evict the meaningful `voice.turn`
+        # span (emitted at `response.done`, i.e. at peak audio flow). Excluding them
+        # keeps only the real request/session/turn spans.
+        try:
+            FastAPIInstrumentor.instrument_app(app, exclude_spans=["receive", "send"])
+        except TypeError:
+            # Older instrumentation without exclude_spans support.
+            FastAPIInstrumentor.instrument_app(app)
 
     _ENABLED = True
     logger.info("Application Insights tracing enabled.")

@@ -49,6 +49,76 @@ def _load_subscription_key() -> str:
 SUBSCRIPTION_KEY = _load_subscription_key()
 UPSTREAM_URL = f"{GATEWAY_WS_URL}?subscription-key={SUBSCRIPTION_KEY}"
 
+# --- Model mode (native speech-to-speech, e.g. gpt-realtime) — OPTIONAL ---
+# A second, fully isolated gateway API + subscription. When both are set, the
+# backend exposes a parallel /realtime-model route. Agent mode is unaffected.
+GATEWAY_WS_URL_MODEL = os.environ.get("GATEWAY_WS_URL_MODEL")
+MODEL_SUBSCRIPTION_KEY = os.environ.get("APIM_SUBSCRIPTION_KEY_MODEL")
+UPSTREAM_URL_MODEL = (
+    f"{GATEWAY_WS_URL_MODEL}?subscription-key={MODEL_SUBSCRIPTION_KEY}"
+    if GATEWAY_WS_URL_MODEL and MODEL_SUBSCRIPTION_KEY
+    else None
+)
+MODEL_MODE = UPSTREAM_URL_MODEL is not None
+
+# --- Voice / session config (all OPTIONAL) ---
+# Agent mode: leave VOICE_TYPE unset to use the agent's own configured voice.
+# Custom Neural Voice (CNV) plugs in here via VOICE_TYPE=azure-custom (agent mode only).
+VOICE_TYPE = (os.environ.get("VOICE_TYPE") or "").strip()          # standard | azure-custom
+VOICE_NAME = (os.environ.get("VOICE_NAME") or "").strip()
+VOICE_CUSTOM_ENDPOINT_ID = (os.environ.get("VOICE_CUSTOM_ENDPOINT_ID") or "").strip()
+# Model mode has no Foundry agent, so the backend supplies the system prompt + voice.
+MODEL_MODE_INSTRUCTIONS = (
+    os.environ.get("MODEL_MODE_INSTRUCTIONS")
+    or "You are a helpful, concise voice assistant. Keep answers to one or two short sentences."
+)
+MODEL_MODE_VOICE = (os.environ.get("MODEL_MODE_VOICE") or "").strip()
+
+
+def _build_voice(mode: str) -> dict | None:
+    """Build the Voice Live `voice` object for a session, or None to keep the default.
+
+    Custom Neural Voice (`azure-custom`) lives in the cascaded TTS stage, which only
+    exists in AGENT mode. Native model mode (gpt-realtime) has no swappable TTS stage,
+    so a CNV request there is ignored (built-in voices only).
+    """
+    if mode == "model":
+        if VOICE_TYPE == "azure-custom":
+            print("[voice] CNV (azure-custom) is not supported in model mode — ignoring; "
+                  "use agent mode for Custom Neural Voice.")
+        if MODEL_MODE_VOICE:
+            return {"name": MODEL_MODE_VOICE, "type": "azure-standard"}
+        return None
+    # agent mode
+    if not VOICE_TYPE:
+        return None
+    if VOICE_TYPE == "azure-custom":
+        voice = {"name": VOICE_NAME, "type": "azure-custom"}
+        if VOICE_CUSTOM_ENDPOINT_ID:
+            voice["endpoint_id"] = VOICE_CUSTOM_ENDPOINT_ID
+        return voice
+    return {"name": VOICE_NAME, "type": "azure-standard"}
+
+
+def _server_session_update(mode: str) -> dict | None:
+    """Server-side `session.update` injected right after the upstream connects.
+
+    Keeps voice + instructions on the server (out of the browser). Model mode always
+    needs instructions + turn detection (no agent); agent mode only overrides the voice
+    when VOICE_TYPE is configured.
+    """
+    session: dict = {}
+    voice = _build_voice(mode)
+    if voice:
+        session["voice"] = voice
+    if mode == "model":
+        session["modalities"] = ["text", "audio"]
+        session["instructions"] = MODEL_MODE_INSTRUCTIONS
+        session["turn_detection"] = {"type": "server_vad"}
+    if not session:
+        return None
+    return {"type": "session.update", "session": session}
+
 app = FastAPI(title="voice-agent-backend")
 
 # Enable Application Insights tracing (no-op if the connection string is unset).
@@ -58,7 +128,21 @@ tracer = get_tracer()
 
 @app.get("/healthz")
 async def healthz():
-    return {"status": "ok", "gateway": GATEWAY_WS_URL}
+    return {
+        "status": "ok",
+        "gateway": GATEWAY_WS_URL,
+        "model_mode": MODEL_MODE,
+        "gateway_model": GATEWAY_WS_URL_MODEL,
+    }
+
+
+@app.get("/modes")
+async def modes():
+    """Which voice modes the backend can serve — the UI uses this to build its toggle."""
+    return {
+        "agent": {"available": True, "route": "/realtime", "label": "Agent (cascaded)"},
+        "model": {"available": MODEL_MODE, "route": "/realtime-model", "label": "gpt-realtime (native S2S)"},
+    }
 
 
 @app.on_event("shutdown")
@@ -105,10 +189,11 @@ class TurnProfiler:
         "response.done",
     }
 
-    def __init__(self, tracer, session_span, session_id: str):
+    def __init__(self, tracer, session_span, session_id: str, mode: str = "agent"):
         self._tracer = tracer
         self._parent_ctx = trace.set_span_in_context(session_span)
         self._session_id = session_id
+        self._mode = mode
         self._index = 0
         self._reset()
 
@@ -207,6 +292,7 @@ class TurnProfiler:
         )
         try:
             span.set_attribute("session.id", self._session_id)
+            span.set_attribute("voice.mode", self._mode)
             span.set_attribute("turn.index", self._index)
             if self._transcript:
                 span.set_attribute("turn.transcript", self._transcript)
@@ -244,27 +330,50 @@ class TurnProfiler:
 
 @app.websocket("/realtime")
 async def realtime(client: WebSocket):
-    """Relay a browser WS session to the Voice Live agent through APIM.
+    """Agent mode: relay the browser to the Foundry agent via APIM (cascaded STT→agent→TTS)."""
+    await _proxy(client, mode="agent", upstream_url=UPSTREAM_URL)
 
-    The whole session is recorded as a single `voice.session` span in
-    Application Insights, with lifecycle events (upstream connect, server errors,
-    close) and per-session message/audio counters.
+
+@app.websocket("/realtime-model")
+async def realtime_model(client: WebSocket):
+    """Model mode: relay the browser to a native speech-to-speech model (e.g. gpt-realtime).
+
+    Uses the separate `voice-agent-model` APIM API + subscription, so it never collides
+    with agent mode. Returns 1011 if model mode is not configured in `.env`.
+    """
+    if not MODEL_MODE:
+        await client.accept()
+        await client.close(code=1011, reason="model mode not configured (set GATEWAY_WS_URL_MODEL + APIM_SUBSCRIPTION_KEY_MODEL)")
+        return
+    await _proxy(client, mode="model", upstream_url=UPSTREAM_URL_MODEL)
+
+
+async def _proxy(client: WebSocket, mode: str, upstream_url: str):
+    """Relay a browser WS session to Voice Live through APIM, in the given mode.
+
+    The whole session is one `voice.session` span (tagged with `voice.mode`) in
+    Application Insights, with lifecycle events, per-session counters and per-turn
+    `voice.turn` child spans. `mode` is "agent" (cascaded) or "model" (native S2S);
+    both share this identical proxy — only the upstream URL and the injected
+    server-side `session.update` differ.
     """
     await client.accept()
     peer = f"{client.client.host}:{client.client.port}" if client.client else "unknown"
+    gateway_url = GATEWAY_WS_URL_MODEL if mode == "model" else GATEWAY_WS_URL
 
     with tracer.start_as_current_span("voice.session") as span:
         session_id = uuid.uuid4().hex
         span.set_attribute("session.id", session_id)
+        span.set_attribute("voice.mode", mode)
         span.set_attribute("net.peer", peer)
-        span.set_attribute("gateway.url", GATEWAY_WS_URL)
+        span.set_attribute("gateway.url", gateway_url)
         started = time.perf_counter()
         counters = {"client_to_upstream": 0, "audio_deltas": 0, "server_events": 0}
-        profiler = TurnProfiler(tracer, span, session_id)
+        profiler = TurnProfiler(tracer, span, session_id, mode)
 
         connect_t0 = time.perf_counter()
         try:
-            upstream = await websockets.connect(UPSTREAM_URL, max_size=None)
+            upstream = await websockets.connect(upstream_url, max_size=None)
         except Exception as exc:  # upstream handshake failed
             span.record_exception(exc)
             span.set_status(trace.Status(trace.StatusCode.ERROR, "upstream connect failed"))
@@ -283,6 +392,19 @@ async def realtime(client: WebSocket):
             "upstream.connected",
             {"connect_ms": round((time.perf_counter() - connect_t0) * 1000, 1)},
         )
+
+        # Inject the server-side session.update (voice + — for model mode — instructions).
+        # Kept on the server so the browser stays secret-free and config-free.
+        server_update = _server_session_update(mode)
+        if server_update is not None:
+            try:
+                await upstream.send(json.dumps(server_update))
+                span.add_event(
+                    "server.session_update",
+                    {"keys": ",".join(server_update["session"].keys())},
+                )
+            except Exception as exc:
+                span.record_exception(exc)
 
         async def client_to_upstream():
             try:

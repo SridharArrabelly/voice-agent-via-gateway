@@ -9,10 +9,31 @@
   const $ = (id) => document.getElementById(id);
   const logEl = $("log"), statusEl = $("status"), dot = $("dot");
   const connectBtn = $("connectBtn"), stopBtn = $("stopBtn"), micLevel = $("micLevel");
-  // Backend WS endpoint: same-origin /realtime by default (backend serves this page).
-  const backendWsUrl = cfg.backendWsUrl ||
-    `${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/realtime`;
-  $("gwPill").textContent = "backend: " + backendWsUrl;
+  // Backend WS base (same-origin host). The path (/realtime vs /realtime-model) is chosen
+  // at connect time from the selected mode.
+  const wsBase = cfg.backendWsBase ||
+    `${location.protocol === "https:" ? "wss" : "ws"}://${location.host}`;
+  const httpBase = `${location.protocol}//${location.host}`;
+
+  function selectedMode() {
+    const el = document.querySelector('input[name="mode"]:checked');
+    return el ? el.value : "agent";
+  }
+  function routeForMode(mode) {
+    return mode === "model" ? "/realtime-model" : "/realtime";
+  }
+  function setModeEnabled(enabled) {
+    document.querySelectorAll('input[name="mode"]').forEach((r) => { r.disabled = !enabled; });
+  }
+  // Ask the backend which modes are available; disable the model toggle if not configured.
+  fetch(httpBase + "/modes").then((r) => r.json()).then((m) => {
+    if (!(m.model && m.model.available)) {
+      const opt = $("modelOpt");
+      const radio = opt && opt.querySelector("input");
+      if (radio) radio.disabled = true;
+      if (opt) { opt.classList.add("disabled"); opt.title = "Set GATEWAY_WS_URL_MODEL + APIM_SUBSCRIPTION_KEY_MODEL in .env to enable"; }
+    }
+  }).catch(() => {});
 
   let ws = null, audioCtx = null, workletNode = null, micStream = null, source = null;
   let playCtx = null, playHead = 0, activeSources = [];
@@ -113,6 +134,10 @@
   // ---- websocket ----
   function connect() {
     connectBtn.disabled = true;
+    setModeEnabled(false);
+    const mode = selectedMode();
+    const backendWsUrl = wsBase + routeForMode(mode);
+    $("gwPill").textContent = `mode: ${mode} · ${backendWsUrl}`;
     setStatus("Connecting…", "connecting");
     ws = new WebSocket(backendWsUrl);
 
@@ -191,6 +216,7 @@
     if (playCtx) { try { playCtx.close(); } catch {} playCtx = null; }
     ws = null;
     connectBtn.disabled = false; stopBtn.disabled = true;
+    setModeEnabled(true);
   }
 
   connectBtn.onclick = connect;

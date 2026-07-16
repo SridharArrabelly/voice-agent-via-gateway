@@ -1,0 +1,32 @@
+<!--
+  APIM onHandshake policy for Voice Live *model mode* (native speech-to-speech).
+
+  Identical to infra/policy.xml except the rewrite-uri: instead of pointing Voice Live
+  at a Foundry *agent* (agent-name=...), it points at a realtime *model* deployment
+  (model=gpt-realtime-1.5). This is the second, parallel gateway API `voice-agent-model`
+  and does NOT affect the agent-mode API `voice-agent`.
+
+  There is no Foundry agent in this mode, so the browser/backend must supply the system
+  prompt, voice and turn-detection via a `session.update` frame after connect.
+-->
+<policies>
+    <inbound>
+        <base />
+        <!-- Gateway injects the Entra token for Foundry using APIM's managed identity -->
+        <authentication-managed-identity resource="https://ai.azure.com" output-token-variable-name="msi-token" ignore-error="false" />
+        <set-header name="Authorization" exists-action="override">
+            <value>@("Bearer " + (string)context.Variables["msi-token"])</value>
+        </set-header>
+        <!-- Native speech-to-speech model (no agent). Clients cannot change the target. -->
+        <rewrite-uri template="/voice-live/realtime?api-version=2026-04-10&amp;model=gpt-realtime-1.5" />
+    </inbound>
+    <backend>
+        <base />
+    </backend>
+    <outbound>
+        <base />
+    </outbound>
+    <on-error>
+        <base />
+    </on-error>
+</policies>

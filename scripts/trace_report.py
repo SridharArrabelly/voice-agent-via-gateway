@@ -48,6 +48,11 @@ if hasattr(sys.stdout, "reconfigure"):
 
 DEFAULT_WAV = ROOT / "scripts" / "assets" / "question-capital-australia.wav"
 BACKEND_WS_URL = os.environ.get("BACKEND_WS_URL", "ws://127.0.0.1:8000/realtime")
+# Model-mode route: derive from the agent route unless overridden.
+BACKEND_WS_URL_MODEL = os.environ.get(
+    "BACKEND_WS_URL_MODEL", BACKEND_WS_URL.replace("/realtime", "/realtime-model")
+)
+ROUTES = {"agent": BACKEND_WS_URL, "model": BACKEND_WS_URL_MODEL}
 
 
 # --------------------------------------------------------------------------- #
@@ -105,22 +110,26 @@ async def _run_turn(ws, chunks: list[str], silence: str, idx: int) -> bool:
         st.cancel()
 
 
-async def _generate(n: int, wav: Path) -> int:
+async def _generate(n: int, wav: Path, modes: list[str]) -> int:
     import websockets
     chunks = _wav_chunks(wav)
     silence = base64.b64encode(b"\x00" * int(24000 * 2 * 0.1)).decode()
     ok = 0
-    print(f"Generating {n} turn(s) through {BACKEND_WS_URL} ...")
-    for i in range(n):
-        try:
-            async with websockets.connect(BACKEND_WS_URL, max_size=None) as ws:
-                if await _run_turn(ws, chunks, silence, i + 1):
-                    ok += 1
-        except (OSError, ConnectionError) as exc:
-            print(f"\n[!] Could not reach the backend at {BACKEND_WS_URL}: {exc}")
-            print("    Start it first:  uv run python backend/app.py")
-            return ok
-        await asyncio.sleep(1)
+    for mode in modes:
+        url = ROUTES[mode]
+        print(f"Generating {n} turn(s) in {mode} mode through {url} ...")
+        for i in range(n):
+            try:
+                async with websockets.connect(url, max_size=None) as ws:
+                    if await _run_turn(ws, chunks, silence, i + 1):
+                        ok += 1
+            except (OSError, ConnectionError) as exc:
+                print(f"\n[!] Could not reach the backend at {url}: {exc}")
+                print("    Start it first:  uv run python backend/app.py")
+                if mode == "model":
+                    print("    (model mode also needs GATEWAY_WS_URL_MODEL + APIM_SUBSCRIPTION_KEY_MODEL in .env)")
+                break
+            await asyncio.sleep(1)
     return ok
 
 
@@ -172,6 +181,7 @@ AppDependencies
 | where Name == 'voice.turn'
 | extend d = Properties
 | project TimeGenerated,
+    mode      = tostring(d['voice.mode']),
     turn      = toint(d['turn.index']),
     asr       = todouble(d['turn.asr_ms']),
     reasoning = todouble(d['turn.reasoning_ms']),
@@ -188,9 +198,10 @@ AppDependencies
 GATEWAY_KQL = """
 ApiManagementGatewayLogs
 | where TimeGenerated > ago({m}m)
-| where ApiId == 'voice-agent'
+| where ApiId in ('voice-agent', 'voice-agent-model')
 | extend apim_overhead = TotalTime - BackendTime
-| project TimeGenerated, Method, ResponseCode, ClientProtocol,
+| extend mode = iff(ApiId == 'voice-agent-model', 'model', 'agent')
+| project TimeGenerated, mode, Method, ResponseCode, ClientProtocol,
           backend_ms = BackendTime, total_ms = TotalTime, apim_overhead
 | order by TimeGenerated desc
 | take 50
@@ -216,20 +227,30 @@ def _report(minutes: int) -> None:
         print("No turns found yet. Ingestion can lag 2-5 min after a conversation — retry,")
         print("or run with --generate to create some. Make sure the backend was running.")
     else:
-        show = ["turn", "asr", "reasoning", "tool", "tts_first", "total", "m2e", "tokens", "question"]
+        show = ["mode", "turn", "asr", "reasoning", "tool", "tts_first", "total", "m2e", "tokens", "question"]
         idx = {c: i for i, c in enumerate(cols)}
         table = [[r[idx[c]] for c in show] for r in rows]
-        _print_table(show, table, aligns="rrrrrrrrl")
-        # medians across the numeric stages
-        def med(col):
-            vals = [r[idx[col]] for r in rows if r[idx[col]] is not None]
+        _print_table(show, table, aligns="lrrrrrrrrl")
+
+        # Per-mode medians → side-by-side agent vs model comparison.
+        num_cols = ("asr", "reasoning", "tool", "tts_first", "total", "m2e")
+
+        def med(subset, col):
+            vals = [r[idx[col]] for r in subset if r[idx[col]] is not None]
             return statistics.median(vals) if vals else None
+
+        modes_present = []
+        for r in rows:
+            mv = r[idx["mode"]] or "agent"
+            if mv not in modes_present:
+                modes_present.append(mv)
+        med_rows = []
+        for mv in modes_present:
+            subset = [r for r in rows if (r[idx["mode"]] or "agent") == mv]
+            med_rows.append([f"{mv} (median, n={len(subset)})"] + [med(subset, c) for c in num_cols])
         print()
-        _print_table(
-            ["stat", "asr", "reasoning", "tool", "tts_first", "total", "m2e"],
-            [["median"] + [med(c) for c in ("asr", "reasoning", "tool", "tts_first", "total", "m2e")]],
-            aligns="lrrrrrr",
-        )
+        _print_table(["mode", "asr", "reasoning", "tool", "tts_first", "total", "m2e"],
+                     med_rows, aligns="lrrrrrr")
 
     if gw_ws:
         print(f"\n=== APIM gateway overhead (ApiManagementGatewayLogs, last {minutes} min) — ms ===")
@@ -238,9 +259,9 @@ def _report(minutes: int) -> None:
             print("No gateway rows yet (new workspace can take 10-30 min for first ingestion).")
         else:
             idx = {c: i for i, c in enumerate(cols)}
-            show = ["Method", "ResponseCode", "ClientProtocol", "backend_ms", "total_ms", "apim_overhead"]
+            show = ["mode", "Method", "ResponseCode", "ClientProtocol", "backend_ms", "total_ms", "apim_overhead"]
             table = [[r[idx[c]] for c in show] for r in rows]
-            _print_table(show, table, aligns="lllrrr")
+            _print_table(show, table, aligns="llllrrr")
     else:
         print("\n(Tip: set LOG_ANALYTICS_WORKSPACE_ID in .env to also show APIM gateway overhead.)")
 
@@ -250,6 +271,8 @@ def main() -> None:
     ap = argparse.ArgumentParser(description="End-to-end voice latency trace report.")
     ap.add_argument("--generate", type=int, default=2,
                     help="number of turns to drive through the backend first (default 2; 0 to skip)")
+    ap.add_argument("--mode", choices=["both", "agent", "model"], default="both",
+                    help="which mode(s) to generate turns for (default both, for the comparison)")
     ap.add_argument("--report-only", action="store_true", help="skip generation, just read traces")
     ap.add_argument("--minutes", type=int, default=30, help="query look-back window (default 30)")
     ap.add_argument("--wav", type=Path, default=DEFAULT_WAV, help="question audio to feed (WAV)")
@@ -257,12 +280,13 @@ def main() -> None:
                     help="seconds to wait for span export before querying (default 20)")
     args = ap.parse_args()
 
+    modes = ["agent", "model"] if args.mode == "both" else [args.mode]
     n = 0 if args.report_only else args.generate
     if n > 0:
         if not args.wav.exists():
             print(f"[!] WAV not found: {args.wav}")
             sys.exit(1)
-        ok = asyncio.run(_generate(n, args.wav))
+        ok = asyncio.run(_generate(n, args.wav, modes))
         if ok == 0:
             print("No turns generated; reporting whatever is already ingested.")
         else:
