@@ -156,6 +156,33 @@ the APIM gateway, the Entra/MI auth — stays the same. Which mode you pick is a
 architecture decision (tools & governance vs. raw latency & voice quality), **not** a
 plumbing change.
 
+### Can I get the best of both — put `gpt-realtime` *inside* my agent? **No.**
+
+A natural next thought is: "let me just set my Foundry agent's model to `gpt-realtime` and
+keep my tools + state." The Foundry agent designer **won't let you** — and this is by
+design, not a bug or a missing permission (even if you've already deployed the model):
+
+- A Foundry **agent is a text orchestrator**. It drives its model over the **text**
+  contract (the chat / responses API): text in → reason & call tools → text out. Its model
+  picker therefore only lists models that speak that text protocol.
+- `gpt-realtime` speaks a **different protocol entirely** — the **realtime audio
+  (WebSocket)** contract: speech in → speech out. It has no text chat-completions surface
+  for the Agent Service to drive, so the designer correctly filters it out.
+
+They ride on **different rails**, which is exactly *why* Voice Live exposes them as two
+separate modes instead of nesting one inside the other. The options collapse to:
+
+| | Uses `gpt-realtime`? | Keeps agent tools / state / governance? | Reachable via this APIM gateway? |
+|---|---|---|---|
+| **Agent mode** *(today)* | ❌ (cascaded text model, e.g. `gpt-5.4-mini`) | ✅ | ✅ `agent-name=…` |
+| **Model mode** | ✅ native speech-to-speech | ❌ (declare `instructions` + `tools` client-side, execute tools yourself) | ✅ `model=gpt-realtime` |
+| ~~Agent hosting a realtime model~~ | — | — | **Not possible** — an agent can't host a realtime model |
+
+So the real trade for a single Voice Live session is **managed agent + tools** (agent mode)
+**vs. best voice experience** (gpt-realtime model mode). You generally **cannot have both at
+once** today. If you need tool calls in model mode, you re-declare them as function-calling
+`tools` in the `session.update` and run the tool logic in your own client/proxy.
+
 > **Want to switch to `gpt-realtime`?** (1) Deploy a `gpt-realtime` model in the Foundry
 > resource, (2) change the rewrite-uri from `agent-name=…&agent-project-name=…` to
 > `model=gpt-realtime`, (3) have the browser send a `session.update` with `instructions`,
