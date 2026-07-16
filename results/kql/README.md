@@ -6,10 +6,48 @@ These queries let the client see **exactly where a voice turn's time goes** and
 | Data source | Table | What it holds |
 |-------------|-------|---------------|
 | **Application Insights** (backend `voice-agent-backend`) | `dependencies` — spans `voice.session` and `voice.turn` | Per-turn internal timeline: ASR, reasoning, web/MCP tool, first-audio (TTS), tokens, and browser mouth-to-ear. |
-| **Log Analytics** `log-voice-agent-gateway` (rg-foundry-sweden) | `ApiManagementGatewayLogs` | APIM gateway request timing: `TotalTime`, `BackendTime`, and the derived gateway overhead. |
+| **Log Analytics** (workspace receiving APIM diag logs) | `ApiManagementGatewayLogs` | APIM gateway request timing: `TotalTime`, `BackendTime`, and the derived gateway overhead. |
 
-> Workspace-based App Insights uses `AppDependencies` + `Properties` instead of
-> `dependencies` + `customDimensions`. Both variants are noted in the queries.
+> **Workspace-based App Insights?** If your App Insights `ingestionMode` is
+> `LogAnalytics` (check with `az monitor app-insights component show`), the data
+> lives in the backing Log Analytics workspace as **`AppDependencies`** with a
+> **`Properties`** column — use those instead of `dependencies` / `customDimensions`.
+> Each query notes this variant.
+
+## One-time setup (do this before running the queries)
+
+The queries are environment-specific. Set these in `.env` (see `.env.example`)
+and do the one-time Azure wiring:
+
+1. **App Insights** — already set via `APPLICATIONINSIGHTS_CONNECTION_STRING`
+   (the backend sends `voice.turn` spans there). Note its **Application ID**
+   as `APPINSIGHTS_APP_ID`; if workspace-based, note the backing workspace GUID
+   as `APPINSIGHTS_WORKSPACE_ID`.
+2. **APIM gateway logs** — create/choose a Log Analytics workspace, then on your
+   APIM instance add a **diagnostic setting** that sends
+   `ApiManagementGatewayLogs` (**Dedicated** destination) to it. Record the
+   workspace `customerId` as `LOG_ANALYTICS_WORKSPACE_ID`.
+
+Then fill the query placeholders from those env vars:
+
+| Placeholder in `.kql` | `.env` value |
+|---|---|
+| `<appinsights-resource>` | `APPINSIGHTS_APP_ID` (or the App Insights resource id) |
+| `<la-workspace>` | `LOG_ANALYTICS_WORKSPACE_ID` (gateway-logs workspace) |
+
+Run from the CLI, e.g.:
+
+```bash
+# App Insights (classic schema)
+az monitor app-insights query --app $APPINSIGHTS_APP_ID \
+  --analytics-query "$(cat results/kql/01-voice-turn-breakdown.kql)"
+
+# Workspace-based App Insights (AppDependencies) or APIM gateway logs
+az monitor log-analytics query -w $APPINSIGHTS_WORKSPACE_ID --analytics-query "<query>"
+az monitor log-analytics query -w $LOG_ANALYTICS_WORKSPACE_ID \
+  --analytics-query "$(cat results/kql/03-apim-gateway-overhead.kql)"
+```
+
 
 ## How the timeline is captured
 

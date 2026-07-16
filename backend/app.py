@@ -28,7 +28,7 @@ WEB_DIR = ROOT / "web"
 # Load configuration from the project-root .env before reading any settings.
 load_dotenv(ROOT / ".env")
 
-from telemetry import configure as configure_telemetry, get_tracer  # noqa: E402
+from telemetry import configure as configure_telemetry, get_tracer, flush as flush_telemetry  # noqa: E402
 from opentelemetry import trace  # noqa: E402
 
 # --- config (all values come from .env / environment) ---
@@ -59,6 +59,12 @@ tracer = get_tracer()
 @app.get("/healthz")
 async def healthz():
     return {"status": "ok", "gateway": GATEWAY_WS_URL}
+
+
+@app.on_event("shutdown")
+def _flush_telemetry_on_shutdown() -> None:
+    # Export any buffered spans so the final turns of a session are not lost.
+    flush_telemetry()
 
 
 # APIM (and Foundry) return one of these request-id headers on the WS handshake.

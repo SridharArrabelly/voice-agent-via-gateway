@@ -49,5 +49,19 @@ def get_tracer():
     return trace.get_tracer("voice-agent.backend")
 
 
+def flush(timeout_ms: int = 5000) -> None:
+    """Force-export any buffered spans. Call on shutdown so the last turns of a
+    session are never lost when the process stops."""
+    if not _ENABLED:
+        return
+    try:
+        provider = trace.get_tracer_provider()
+        force = getattr(provider, "force_flush", None)
+        if callable(force):
+            force(timeout_ms)
+    except Exception:  # best-effort; never block shutdown
+        logger.debug("tracer flush on shutdown failed", exc_info=True)
+
+
 def enabled() -> bool:
     return _ENABLED

@@ -26,9 +26,53 @@ exactly the credential it should.
   access to the resources below.
 - A `.env` file at the project root — copy `.env.example` and fill in values (the
   `APIM_SUBSCRIPTION_KEY` in particular). `.env` is git-ignored.
-- Existing Azure resources (already configured in this PoC):
-  - Foundry: `foundry-resource-sweden-01`, project `foundry-showcase`, agent `voice-mode-agent`.
-  - APIM: `apim-ai-gateway-sweden` (BasicV2), gateway `wss://apim-ai-gateway-sweden.azure-api.net`.
+- Existing Azure resources:
+  - A **Foundry** resource + project with a **voice-enabled agent** (see next section).
+  - **APIM** (BasicV2 or higher) with a WebSocket API fronting the Voice Live endpoint.
+  - This PoC was built against Foundry `foundry-resource-sweden-01` / project `foundry-showcase`
+    / agent `voice-mode-agent`, and APIM `apim-ai-gateway-sweden`
+    (gateway `wss://apim-ai-gateway-sweden.azure-api.net`).
+
+## Set up the Foundry agent
+
+The UI talks to an existing **prompt agent** in Azure AI Foundry — create one first,
+then put its name in `.env` as `AGENT_NAME` (and the project as `AGENT_PROJECT_NAME`).
+
+**Option A — Foundry portal (UI):**
+1. Open your project in [Azure AI Foundry](https://ai.azure.com) → **Agents** → **New agent**.
+2. Give it a name (e.g. `voice-mode-agent`), pick a chat model (e.g. `gpt-4o` / `gpt-5.4-mini`),
+   and add a short system prompt. Optionally enable a tool such as **web search**.
+3. Voice Live wraps any prompt agent — no extra "voice" toggle is required; the realtime
+   endpoint adds speech-to-text and text-to-speech around the agent.
+4. Copy the **agent name** and **project name**.
+
+**Option B — code (Azure AI Projects SDK):**
+```python
+from azure.ai.projects import AIProjectClient
+from azure.identity import DefaultAzureCredential
+
+project = AIProjectClient(
+    endpoint="https://<your-foundry-resource>.services.ai.azure.com/api/projects/<project>",
+    credential=DefaultAzureCredential(),
+)
+agent = project.agents.create_agent(
+    model="gpt-4o",
+    name="voice-mode-agent",
+    instructions="You are a concise, friendly voice assistant. Keep answers short.",
+)
+print(agent.name)   # <- put this in AGENT_NAME
+```
+
+Then set in `.env`:
+```
+AGENT_NAME=voice-mode-agent
+AGENT_PROJECT_NAME=<your-project-name>
+FOUNDRY_WS_HOST=wss://<your-foundry-resource>.services.ai.azure.com
+```
+`AGENT_NAME` / `AGENT_PROJECT_NAME` are the source of truth for both the direct
+scripts and the APIM policy (`infra/policy.xml` rewrites the handshake to these
+agent coordinates). Grant APIM's managed identity **Cognitive Services User** on the
+Foundry resource so it can mint the Entra token on the gateway hop.
 
 ## Configuration (`.env`)
 
@@ -43,6 +87,7 @@ All runtime parameters live in `.env` (loaded via `python-dotenv`). See `.env.ex
 | `FOUNDRY_WS_HOST`, `AGENT_NAME`, `AGENT_PROJECT_NAME`, `VOICELIVE_API_VERSION` | Foundry agent coordinates (source of truth mirrored in the APIM policy) |
 | `APPLICATIONINSIGHTS_CONNECTION_STRING` | App Insights connection string; enables OTel tracing (unset = tracing off) |
 | `OTEL_SERVICE_NAME` | service name reported to App Insights (default `voice-agent-backend`) |
+| `LOG_ANALYTICS_WORKSPACE_ID` / `APPINSIGHTS_APP_ID` / `APPINSIGHTS_WORKSPACE_ID` | *(optional)* query targets for the diagnostic KQL in [`results/kql/`](results/kql/) — not used at runtime |
 
 ## Run it
 
@@ -101,38 +146,19 @@ User** on the Foundry resource.
 | `scripts/test_qa.py` | runs a question set through the agent in voice + text; records answers + latency |
 | `scripts/voice_profile.py` | **pipeline stage profiler**: feeds a spoken WAV and times ASR / reasoning / tool / TTS per turn (APIM vs direct) |
 
-## Verify without the browser
+## Documentation
 
-```powershell
-# through the Python backend (start the backend first):
-uv run python scripts/test_proxy.py
-# or directly through APIM:
-uv run python scripts/test_gateway.py
-```
+Deeper topics live in focused docs so this page stays short:
 
-Each prints the agent transcript and the number of audio deltas received.
+| Doc | Contents |
+|-----|----------|
+| [docs/benchmarks.md](docs/benchmarks.md) | Latency benchmarks & the "is APIM the bottleneck?" analysis; `bench.py`, `bench_connect.py`, `voice_profile.py`; verify-without-browser scripts. |
+| [docs/observability.md](docs/observability.md) | App Insights / OpenTelemetry tracing, per-turn `voice.turn` stage spans, browser mouth-to-ear marks, cross-hop correlation. |
+| [results/kql/](results/kql/) | Ready-made KQL for per-turn breakdown, gateway overhead, and joining the hops (+ one-time setup). |
 
-## Profile where a voice turn's latency goes
-
-`scripts/voice_profile.py` feeds a **spoken question (WAV)** into the agent and reconstructs
-the pipeline timeline from the Voice Live event stream, so you can see whether a slow turn is
-**ASR**, **model reasoning**, a **web/tool call**, or **TTS** — and how much (if any) the APIM
-gateway adds. Meant to be handed to anyone (incl. the customer) to run against their own agent.
-
-```powershell
-uv run python scripts/voice_profile.py                    # APIM path, bundled sample WAV
-uv run python scripts/voice_profile.py --path direct      # bypass APIM (needs: az login)
-uv run python scripts/voice_profile.py --path both --iters 3   # side-by-side + APIM overhead
-uv run python scripts/voice_profile.py --wav path\to\your-question.wav   # your own audio
-```
-
-- Any mono/stereo 16-bit PCM WAV works (auto-downmixed + resampled to 24 kHz); a sample is
-  bundled at `scripts/assets/`. Record a real user question to profile your own traffic.
-- Enables `input_audio_transcription` (default model `azure-speech`; override with
-  `INPUT_TRANSCRIPTION_MODEL`) so ASR timing is captured.
-- Writes `results/voice-profile.{md,json}`. Example finding: even a trivial question
-  (“capital of Australia”) spends **~1.3 s in ASR** and **~3 s in reasoning (of which ~1.8 s
-  is the web tool)**; TTS is fast, and **APIM overhead is ≈0 per stage**.
+**TL;DR on latency:** APIM is **not** the bottleneck — it adds ~200 ms **once** at connect
+and ≈0 per turn; the dominant cost is model generation. See
+[docs/benchmarks.md](docs/benchmarks.md) for the numbers.
 
 ## Notes / caveats (prototype)
 
@@ -143,121 +169,3 @@ uv run python scripts/voice_profile.py --wav path\to\your-question.wav   # your 
   the server rejects them and closes the socket. The client only sets modalities/formats.
 - `.env` and `.venv/` are git-ignored.
 
-## Observability (Application Insights + OpenTelemetry)
-
-The backend is instrumented with the **Azure Monitor OpenTelemetry** distro. Set
-`APPLICATIONINSIGHTS_CONNECTION_STRING` in `.env` to enable it (leave it unset to run
-without tracing). On startup it:
-
-- auto-instruments **FastAPI** (each HTTP request is traced), and
-- records **one `voice.session` span per WebSocket conversation** through `/realtime`.
-
-Each session span carries:
-
-| Attribute / event | Meaning |
-|---|---|
-| `net.peer`, `gateway.url` | browser client + APIM target |
-| `upstream.connected` (event, `connect_ms`) | time to establish the APIM/Voice Live WS |
-| `voice.session.created` / `voice.response.done` / `voice.*` (events) | key Voice Live server events, incl. transcripts |
-| `voice.error` (event, sets span error status) | any server-side Voice Live error |
-| `session.duration_ms`, `session.client_messages`, `session.audio_deltas`, `session.server_events` | per-session totals |
-| `session.closed` (event) | final counters when the socket closes |
-| `apim.apim-request-id` / `apim.x-ms-request-id` | APIM handshake request-id — cross-hop join key to `ApiManagementGatewayLogs` |
-
-### End-to-end per-turn trace (where the latency actually goes)
-
-For each spoken turn the backend emits a child span **`voice.turn`** under the
-session, reconstructed from the Voice Live event stream. It breaks the turn into
-the same stages as `voice_profile.py`, but live and correlated end-to-end:
-
-| Attribute | Stage |
-|---|---|
-| `turn.asr_ms` | speech end → transcription done (ASR) |
-| `turn.reasoning_ms` | `response.created` → first token (model thinking) |
-| `turn.tool_ms` | web / MCP tool call (0 if the agent didn't search) |
-| `turn.tts_first_ms` | first token → first audio (TTS start) |
-| `turn.total_ms` | speech end → `response.done` |
-| `turn.client_wait_ms` | **true browser mouth-to-ear** (from client marks) |
-| `turn.barge_in` | user cut in over agent audio |
-| `turn.transcript` / `turn.agent_transcript` / `turn.usage.*` | text + token usage |
-
-The browser posts lightweight `client.*` marks (`speech_stopped`,
-`first_audio_played`, `barge_in`); the backend intercepts them (they are **never**
-forwarded to Voice Live) and records them on the turn. This gives the customer a
-single App Insights transaction spanning **browser → backend → APIM → agent →
-Voice Live → back**, plus ready-made **KQL in [`results/kql/`](results/kql/)**:
-
-- `01`/`02` — per-turn stage split + P50/P90 (App Insights)
-- `03` — APIM gateway overhead `TotalTime − BackendTime` (`ApiManagementGatewayLogs`)
-- `04` — join the two hops on the APIM request-id (or by time window)
-
-APIM gateway logs flow to the Log Analytics workspace **`log-voice-agent-gateway`**
-(rg-foundry-sweden) via diagnostic setting `gateway-impact`.
-
-View them in the Application Insights resource under **Transaction search** /
-**Investigate → Performance**, or query with KQL, e.g.:
-
-```kusto
-dependencies
-| where name == "voice.session"
-| order by timestamp desc
-```
-
-## Latency: is APIM the bottleneck?
-
-The customer reported that invoking the **agent** through APIM feels slower than going
-direct. `scripts/bench.py` measures this head-on as a **2×2 matrix** against the *same*
-agent (`AGENT_NAME`, gpt-5.4-mini, no model sent):
-
-| # | Path | Modality |
-|--:|------|----------|
-| 1 | APIM gateway (raw WS) | voice |
-| 2 | APIM gateway (raw WS) | text |
-| 3 | Direct Voice Live **SDK** (Entra) | voice |
-| 4 | Direct Voice Live **SDK** (Entra) | text |
-
-Per run it records `connect`, `session`, `first` (first output token), `done`, and `e2e`.
-Results are written to `results/bench-matrix.{md,json}`.
-
-```powershell
-uv run python scripts/bench.py 6
-```
-
-**Findings (median of 6 iterations, ms):**
-
-| # | Path | Modality | connect | session | first | done | e2e |
-|--:|------|----------|--------:|--------:|------:|-----:|----:|
-| 1 | APIM | voice | 1139 | 170 | 1631 | 1679 | 3045 |
-| 2 | APIM | text | 1119 | 172 | 1276 | 1457 | 2747 |
-| 3 | Direct SDK | voice | 2192 | 223 | 1440 | 1636 | 4158 |
-| 4 | Direct SDK | text | 2421 | 199 | 1115 | 1309 | 4410 |
-
-**APIM overhead vs direct SDK (median APIM − median Direct):**
-
-| Modality | connect | session | first | done |
-|----------|--------:|--------:|------:|-----:|
-| voice | **−1053** | −53 | +191 | +43 |
-| text | **−1302** | −27 | +161 | +148 |
-
-**Conclusion — APIM is *not* the bottleneck:**
-
-- **Connect is ~1 s *faster* through APIM.** The raw-WS APIM path authenticates with a
-  subscription key and APIM injects a *cached* managed-identity token server-side, while the
-  direct SDK pays Entra token acquisition + client init on every connect. So "direct" is not
-  automatically faster.
-- **The extra proxy hop adds ~+0.2 s to first-token / turn-completion** — a real but modest
-  per-turn cost, small next to the model's ~1–1.6 s generation time.
-- **End-to-end, APIM is lower** (voice 3045 vs 4158 ms; text 2747 vs 4410 ms)
-  because the faster connect offsets the small streaming delta.
-- There is **no APIM token/rate-limit policy** throttling the agent path — the `voice-agent`
-  API has no limit policy, and the chat API's conditional `llm-token-limit` is **inert**
-  (its `tokenlimit-<deployment>` variables are unset; there are zero named values).
-
-**What to tell the customer:** the dominant latency is **model generation**, essentially
-identical on both paths. If a perceived slowdown remains, look at (1) reconnecting per turn
-instead of reusing a warm WebSocket, and (2) the model **deployment TPM** (gpt-5.4-mini is
-at 750k) — not an APIM policy.
-
-> Handshake decomposition (`scripts/bench_connect.py`) confirms this: the ~1s connect is
-> mostly network TCP+TLS to the region (paid by the direct path too); APIM adds only
-> ~200 ms **one-time** and **≈0 per turn**. Per-turn ttfr is identical with or without APIM.

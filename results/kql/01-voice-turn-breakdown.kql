@@ -30,3 +30,20 @@ dependencies
     barge_in      = tostring(d["turn.barge_in"]),
     total_tokens  = toint(d["turn.usage.total_tokens"])
 | order by timestamp desc
+
+// --- Workspace-based App Insights variant (ingestionMode = LogAnalytics) ---
+// Run in the backing Log Analytics workspace (APPINSIGHTS_WORKSPACE_ID):
+// AppDependencies
+// | where TimeGenerated > ago(1h)
+// | where Name == "voice.turn"
+// | extend d = Properties
+// | project TimeGenerated,
+//     turn = toint(d["turn.index"]),
+//     asr_ms = todouble(d["turn.asr_ms"]),
+//     reasoning_ms = todouble(d["turn.reasoning_ms"]),
+//     tool_ms = todouble(d["turn.tool_ms"]),
+//     tts_first_ms = todouble(d["turn.tts_first_ms"]),
+//     total_ms = todouble(d["turn.total_ms"]),
+//     client_wait_ms = todouble(d["turn.client_wait_ms"]),
+//     transcript = tostring(d["turn.transcript"])
+// | order by TimeGenerated desc
