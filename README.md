@@ -43,7 +43,9 @@ then put its name in `.env` as `AGENT_NAME` (and the project as `AGENT_PROJECT_N
 2. Give it a name (e.g. `voice-mode-agent`), pick a chat model (e.g. `gpt-4o` / `gpt-5.4-mini`),
    and add a short system prompt. Optionally enable a tool such as **web search**.
 3. Voice Live wraps any prompt agent — no extra "voice" toggle is required; the realtime
-   endpoint adds speech-to-text and text-to-speech around the agent.
+   endpoint adds speech-to-text and text-to-speech around the agent. *(This is **agent
+   mode** — Voice Live also has a native speech-to-speech **model mode** like `gpt-realtime`;
+   see [Voice Live has two modes](#voice-live-has-two-modes-agent-vs-model-this-trips-people-up).)*
 4. Copy the **agent name** and **project name**.
 
 **Option B — code (Azure AI Projects SDK):**
@@ -124,6 +126,41 @@ User** on the Foundry resource.
 >
 > To target an agent that lives on a **different** Foundry resource than the gateway's
 > backend host, add `&foundry-resource-override=<resource-name>` to the rewrite-uri.
+
+## Voice Live has two modes: **agent** vs **model** (this trips people up)
+
+The single most important thing to understand about Voice Live — and the part that is easy
+to miss (we did, for a while) — is that the **same** `/voice-live/realtime` endpoint can run
+in **two completely different ways**, selected purely by the query parameters:
+
+| | **Agent mode** *(what this prototype uses)* | **Model mode** *(e.g. `gpt-realtime`)* |
+|---|---|---|
+| Endpoint param | `agent-name=…&agent-project-name=…` | `model=gpt-realtime` |
+| How it works | **Cascaded pipeline:** speech-to-text → your **text** Foundry agent → text-to-speech. Voice Live bolts STT + TTS around an ordinary text agent. | **Native speech-to-speech:** one realtime model takes audio in and emits audio out directly — no STT/TTS seam. |
+| The "brain" | Your Foundry **agent** (its model, system prompt, tools, knowledge, state) | A single **realtime model** deployment (`gpt-realtime`) |
+| Tools / instructions | Managed **by the agent** in Foundry | You declare them **client-side** in the `session.update` frame |
+| Memory / governance / observability | ✅ handled by Agent Service | ❌ you own it |
+| Barge-in, prosody, latency | Good, but limited by the cascade | **Best** — native interruption, more natural voice, lower latency |
+| Best for | Enterprise agents needing tools, state, policy, analytics | Lowest-latency, most natural talk-back; simple orchestration |
+
+**Why the confusion happens:** in agent mode there is **no "voice" switch** anywhere on the
+Foundry agent. Any plain text/prompt agent becomes "voice-enabled" simply because Voice
+Live wraps it with STT/TTS at the realtime endpoint. So people assume Voice Live *is* the
+cascaded-agent pattern and never realize the very same endpoint also exposes native
+speech-to-speech models like `gpt-realtime` — you just pass `model=` instead of
+`agent-name=`.
+
+**Practical takeaway:** the choice between these two modes is one URL parameter in the APIM
+`rewrite-uri` (`infra/policy.xml`). Everything else — the browser client, the Python proxy,
+the APIM gateway, the Entra/MI auth — stays the same. Which mode you pick is an
+architecture decision (tools & governance vs. raw latency & voice quality), **not** a
+plumbing change.
+
+> **Want to switch to `gpt-realtime`?** (1) Deploy a `gpt-realtime` model in the Foundry
+> resource, (2) change the rewrite-uri from `agent-name=…&agent-project-name=…` to
+> `model=gpt-realtime`, (3) have the browser send a `session.update` with `instructions`,
+> `voice`, VAD settings, and any function-calling `tools` (since there's no agent to supply
+> them). Not yet implemented here — a planned next step.
 
 ## Layout
 
