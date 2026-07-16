@@ -1,0 +1,198 @@
+{
+  "generated_utc": "2026-07-16T18:49:15.612704+00:00",
+  "gateway_ws": "ws://127.0.0.1:8000/realtime",
+  "sessions": [
+    {
+      "modality": "voice",
+      "connect_ms": 2254.0,
+      "turns": [
+        {
+          "question": "What is the latest stable version of Python, and roughly when was it released?",
+          "answer": "The latest stable Python release is **Python 3.14.6**, released on **June 10, 2026**.\n\nIf you meant the latest **major stable series**, that\u2019s **Python 3.14.0**, which was first released on **October 7, 2025**.\n\nSource: Python.org release pages.",
+          "audio_deltas": 43,
+          "ttfr_ms": 3624.0,
+          "total_ms": 8139.9,
+          "error": null,
+          "modality": "voice"
+        },
+        {
+          "question": "Who is the current CEO of OpenAI?",
+          "answer": "The current CEO of OpenAI is **Sam Altman**.\n\nOpenAI\u2019s official site says, \u201c**I remain the CEO of OpenAI**\u201d in its May 7, 2025 leadership update.",
+          "audio_deltas": 24,
+          "ttfr_ms": 5317.9,
+          "total_ms": 7312.3,
+          "error": null,
+          "modality": "voice"
+        },
+        {
+          "question": "What is today's date?",
+          "answer": "Today is **July 16, 2026**.",
+          "audio_deltas": 8,
+          "ttfr_ms": 2239.6,
+          "total_ms": 2834.3,
+          "error": null,
+          "modality": "voice"
+        },
+        {
+          "question": "Who won the most recent FIFA World Cup, and in what year?",
+          "answer": "The most recent FIFA World Cup was won by **Argentina** in **2022**. They beat **France** in the final on December 18, 2022.",
+          "audio_deltas": 19,
+          "ttfr_ms": 3584.6,
+          "total_ms": 5525.1,
+          "error": null,
+          "modality": "voice"
+        },
+        {
+          "question": "What is the latest iPhone model Apple has released?",
+          "answer": "The most recently released iPhone model appears to be **iPhone 17e**, which Apple announced on **March 2, 2026** and made available on **March 11, 2026**.\n\nIf you meant the latest **flagship** iPhone, that would be the **iPhone 17 Pro**.",
+          "audio_deltas": 34,
+          "ttfr_ms": 8606.5,
+          "total_ms": 12133.8,
+          "error": null,
+          "modality": "voice"
+        },
+        {
+          "question": "What is the current approximate price of Bitcoin in US dollars?",
+          "answer": "Bitcoin is currently around **$64,000 USD** \u2014 roughly **$64.0k to $64.4k** based on the latest market quotes I found.\n\nExamples from live price pages:\n- CoinDesk: **$64,411.38**\n- Kraken: **$64,173.00**\n- OKX: **$64,183.50**\n\nSo a good rough estimate is **about $64.2k per BTC**.",
+          "audio_deltas": 70,
+          "ttfr_ms": 6156.3,
+          "total_ms": 16371.6,
+          "error": null,
+          "modality": "voice"
+        },
+        {
+          "question": "Who is the current Secretary-General of the United Nations?",
+          "answer": "The current Secretary-General of the United Nations is **Ant\u00f3nio Guterres**.",
+          "audio_deltas": 11,
+          "ttfr_ms": 4196.9,
+          "total_ms": 4786.1,
+          "error": null,
+          "modality": "voice"
+        },
+        {
+          "question": "Name one major AI model that was released recently.",
+          "answer": "One recent major AI model is **GPT-5.6** from OpenAI, which was released on **July 9, 2026**.\n\nIf you want, I can also name a recent model from Google or Anthropic.",
+          "audio_deltas": 27,
+          "ttfr_ms": 4690.4,
+          "total_ms": 7764.2,
+          "error": null,
+          "modality": "voice"
+        },
+        {
+          "question": "What is the capital city of Australia?",
+          "answer": "The capital city of Australia is **Canberra**.",
+          "audio_deltas": 7,
+          "ttfr_ms": 3055.1,
+          "total_ms": 3620.3,
+          "error": null,
+          "modality": "voice"
+        },
+        {
+          "question": "What is the weather like in London today?",
+          "answer": "London is **sunny and warm today**. The latest reports show it around **28\u00b0C (82\u00b0F)**, with **light breeze**, **low chance of rain**, and **mostly clear/sunny conditions**.\n\nA quick summary:\n- **Temperature:** about **28\u00b0C / 82\u00b0F**\n- **Feels like:** about **27.5\u201328\u00b0C / 80\u201382\u00b0F**\n- **Rain chance:** **0\u20132%**\n- **Wind:** light to moderate, around **8\u201310 mph**\n\nIf you want, I can also give you the **hour-by-hour forecast** or the **forecast for tomorrow**.",
+          "audio_deltas": 81,
+          "ttfr_ms": 4867.2,
+          "total_ms": 16649.2,
+          "error": null,
+          "modality": "voice"
+        }
+      ]
+    },
+    {
+      "modality": "text",
+      "connect_ms": 1385.0,
+      "turns": [
+        {
+          "question": "What is the latest stable version of Python, and roughly when was it released?",
+          "answer": "The latest stable version of Python is **Python 3.14.6**, and it was released on **June 10, 2026**.\n\nIf you mean the latest **feature series**, that\u2019s **Python 3.14**.",
+          "audio_deltas": 0,
+          "ttfr_ms": 3714.2,
+          "total_ms": 4026.3,
+          "error": null,
+          "modality": "text"
+        },
+        {
+          "question": "Who is the current CEO of OpenAI?",
+          "answer": "The current CEO of OpenAI is **Sam Altman**.\n\nOpenAI\u2019s own site states in its \u201cOur structure\u201d page that the board includes \u201cCEO Sam Altman,\u201d and OpenAI also announced on **November 29, 2023** that \u201cSam Altman returns as CEO.\u201d",
+          "audio_deltas": 0,
+          "ttfr_ms": 3270.4,
+          "total_ms": 3501.3,
+          "error": null,
+          "modality": "text"
+        },
+        {
+          "question": "What is today's date?",
+          "answer": "Today\u2019s date is **July 16, 2026**.",
+          "audio_deltas": 0,
+          "ttfr_ms": 1767.8,
+          "total_ms": 2059.8,
+          "error": null,
+          "modality": "text"
+        },
+        {
+          "question": "Who won the most recent FIFA World Cup, and in what year?",
+          "answer": "The most recent FIFA World Cup was won by **Argentina**, in **2022**.",
+          "audio_deltas": 0,
+          "ttfr_ms": 3741.3,
+          "total_ms": 3996.3,
+          "error": null,
+          "modality": "text"
+        },
+        {
+          "question": "What is the latest iPhone model Apple has released?",
+          "answer": "The latest iPhone model Apple has released appears to be **iPhone 17e**, which became available on **March 11, 2026**.\n\nIf you mean the latest flagship series, that\u2019s the **iPhone 17 lineup** (including iPhone 17, iPhone 17 Pro, iPhone 17 Pro Max, and iPhone Air), announced on **September 9, 2025**.",
+          "audio_deltas": 0,
+          "ttfr_ms": 4895.6,
+          "total_ms": 5477.6,
+          "error": null,
+          "modality": "text"
+        },
+        {
+          "question": "What is the current approximate price of Bitcoin in US dollars?",
+          "answer": "Bitcoin is currently around **$64,000 USD** per BTC.\n\nRecent sources I found put it in a narrow range of about **$63,800\u2013$64,400**, so **$64.0k** is a reasonable approximation.",
+          "audio_deltas": 0,
+          "ttfr_ms": 3689.7,
+          "total_ms": 4095.8,
+          "error": null,
+          "modality": "text"
+        },
+        {
+          "question": "Who is the current Secretary-General of the United Nations?",
+          "answer": "The current Secretary-General of the United Nations is **Ant\u00f3nio Guterres**.\n\nThe UN\u2019s official site identifies him as the Secretary-General, and says he took office on **1 January 2017**.",
+          "audio_deltas": 0,
+          "ttfr_ms": 3771.4,
+          "total_ms": 4111.9,
+          "error": null,
+          "modality": "text"
+        },
+        {
+          "question": "Name one major AI model that was released recently.",
+          "answer": "One recent major AI model is **GPT-5.6** from OpenAI, released on **July 9, 2026**.",
+          "audio_deltas": 0,
+          "ttfr_ms": 4322.0,
+          "total_ms": 4707.0,
+          "error": null,
+          "modality": "text"
+        },
+        {
+          "question": "What is the capital city of Australia?",
+          "answer": "The capital city of Australia is **Canberra**.",
+          "audio_deltas": 0,
+          "ttfr_ms": 2310.6,
+          "total_ms": 2498.8,
+          "error": null,
+          "modality": "text"
+        },
+        {
+          "question": "What is the weather like in London today?",
+          "answer": "London today is **sunny and warm**.\n\n- **Current:** about **28\u00b0C (82\u00b0F)**, feels like **27.5\u00b0C**\n- **Today\u2019s high/low:** around **29\u00b0C / 15\u201316\u00b0C**\n- **Rain chance:** **very low**, around **0\u20135%**\n- **Wind:** light to moderate, around **17 km/h** from the east\n- **UV:** **high** during the day\n\nSo overall: **bright, mostly dry, and quite warm for London**.",
+          "audio_deltas": 0,
+          "ttfr_ms": 2480.8,
+          "total_ms": 3379.1,
+          "error": null,
+          "modality": "text"
+        }
+      ]
+    }
+  ]
+}

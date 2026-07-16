@@ -1,0 +1,21 @@
+<policies>
+    <inbound>
+        <base />
+        <!-- Gateway injects the Entra token for Foundry using APIM's managed identity -->
+        <authentication-managed-identity resource="https://ai.azure.com" output-token-variable-name="msi-token" ignore-error="false" />
+        <set-header name="Authorization" exists-action="override">
+            <value>@("Bearer " + (string)context.Variables["msi-token"])</value>
+        </set-header>
+        <!-- Gateway owns the target agent + Voice Live params (clients cannot change them) -->
+        <rewrite-uri template="/voice-live/realtime?api-version=2026-04-10&amp;agent-name=voice-mode-agent&amp;agent-project-name=foundry-showcase" />
+    </inbound>
+    <backend>
+        <base />
+    </backend>
+    <outbound>
+        <base />
+    </outbound>
+    <on-error>
+        <base />
+    </on-error>
+</policies>

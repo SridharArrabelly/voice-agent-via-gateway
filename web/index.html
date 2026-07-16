@@ -1,0 +1,45 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Voice Agent · via APIM Gateway</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <div class="app">
+    <header>
+      <h1>🎙️ Voice Agent</h1>
+      <p class="sub">Foundry <code>voice-mode-agent</code> · streamed through <strong>APIM</strong> (Voice Live)</p>
+    </header>
+
+    <div class="status-bar">
+      <span id="dot" class="dot idle"></span>
+      <span id="status">Disconnected</span>
+    </div>
+
+    <div class="controls">
+      <button id="connectBtn" class="primary">Start conversation</button>
+      <button id="stopBtn" class="ghost" disabled>End</button>
+      <span id="mic" class="mic-ind" title="Mic level"><span id="micLevel"></span></span>
+    </div>
+
+    <div id="log" class="log" aria-live="polite"></div>
+
+    <footer>
+      <div class="pill" id="gwPill">backend: —</div>
+      <details>
+        <summary>How it works</summary>
+        <p>Your browser opens a WebSocket to the <b>Python backend</b> (same origin) — it
+        carries no secrets. The backend forwards the stream to the <b>APIM gateway</b> using a
+        subscription key held server-side; APIM injects an <b>Entra ID</b> token (via its managed
+        identity) and relays to the Azure <b>Voice Live</b> endpoint bound to the Foundry agent.
+        Audio is PCM16 @ 24&nbsp;kHz; the server handles turn-taking (semantic VAD) and barge-in.</p>
+      </details>
+    </footer>
+  </div>
+
+  <script src="config.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>
