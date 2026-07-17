@@ -103,6 +103,37 @@ async def run_apim(modality: str) -> dict:
 # --------------------------------------------------------------------------- #
 # Path 3/4: direct via azure-ai-voicelive SDK
 # --------------------------------------------------------------------------- #
+# Foundry Voice Live expects an Entra token for this resource (same as the APIM
+# managed-identity policy: resource="https://ai.azure.com").
+FOUNDRY_SCOPE = "https://ai.azure.com/.default"
+
+
+def _make_caching_cli_credential():
+    """AzureCliCredential subclass that caches the token in-process.
+
+    The azure-ai-voicelive SDK calls ``get_token`` on every ``connect()``. The
+    stock ``AzureCliCredential`` shells out to ``az`` each time — slow (1–3 s) and
+    flaky ("Timed out waiting for Azure CLI"), which pollutes the ``connect``
+    measurement and fails runs. We subclass the real credential (so the SDK still
+    recognises it as an async credential) and only re-shell near expiry, so
+    ``connect`` reflects the real TLS + WS handshake — an apples-to-apples
+    APIM-vs-Direct comparison.
+    """
+    from azure.identity.aio import AzureCliCredential
+
+    class CachingCliCredential(AzureCliCredential):
+        def __init__(self, *a, **kw):
+            super().__init__(*a, **kw)
+            self._cached = None
+
+        async def get_token(self, *scopes, **kwargs):
+            if self._cached is None or (self._cached.expires_on - time.time()) < 300:
+                self._cached = await super().get_token(*scopes, **kwargs)
+            return self._cached
+
+    return CachingCliCredential()
+
+
 async def run_sdk(modality: str, cred) -> dict:
     from azure.ai.voicelive.aio import connect
     from azure.ai.voicelive.models import (
@@ -247,14 +278,20 @@ async def main():
     iters = int(sys.argv[1]) if len(sys.argv) > 1 else 6
     print(f"agent={AGENT}  iterations={iters}  (APIM api={API_VERSION}, SDK api={SDK_API_VERSION})")
 
-    from azure.identity.aio import AzureCliCredential
-    cred = AzureCliCredential()
+    from azure.identity.aio import AzureCliCredential  # noqa: F401 (kept for env probe)
+    cred = _make_caching_cli_credential()
     try:
         results = {}
         print("\n########## 1. APIM gateway + VOICE ##########")
         results["apim_voice"] = await bench("APIM voice", lambda: run_apim("voice"), iters)
         print("\n########## 2. APIM gateway + TEXT ##########")
         results["apim_text"] = await bench("APIM text", lambda: run_apim("text"), iters)
+        # Pre-warm the Entra token once so the first SDK connect isn't charged for
+        # the `az` shell-out (kept out of the measured connect window).
+        try:
+            await cred.get_token(FOUNDRY_SCOPE)
+        except Exception as exc:
+            print(f"  [warn] could not pre-acquire Entra token: {str(exc)[:120]}")
         print("\n########## 3. Direct SDK + VOICE ##########")
         results["sdk_voice"] = await bench("SDK voice", lambda: run_sdk("voice", cred), iters)
         print("\n########## 4. Direct SDK + TEXT ##########")
