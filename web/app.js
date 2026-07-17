@@ -106,7 +106,11 @@
       audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true, autoGainControl: true }
     });
     source = audioCtx.createMediaStreamSource(micStream);
-    workletNode = new AudioWorkletNode(audioCtx, "pcm-capture");
+    // Batch ~20 ms of audio per WS message (override via VOICE_AGENT_CONFIG.micBatchMs).
+    // 0 or unset -> 20 ms. Fewer, larger frames = less JSON/base64 CPU and GC jitter.
+    const micBatchMs = Number(cfg.micBatchMs) || 20;
+    const batchSamples = Math.max(128, Math.round((SAMPLE_RATE * micBatchMs) / 1000));
+    workletNode = new AudioWorkletNode(audioCtx, "pcm-capture", { processorOptions: { batchSamples } });
     workletNode.port.onmessage = (e) => {
       const pcm = e.data; // Int16Array
       // simple level meter

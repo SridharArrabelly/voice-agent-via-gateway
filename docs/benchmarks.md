@@ -130,3 +130,28 @@ deltas as ≈0 ± noise — see below.</sub>
 > Handshake decomposition (`scripts/bench_connect.py`) confirms the split: most of the connect
 > is TCP+TLS+session setup paid by the direct path too; APIM adds only ~0.3 s **one-time** and
 > **≈0 per turn**.
+
+## Shaving the end-to-end pipeline
+
+`connect` is one-time; what the user feels every turn is **end-of-speech → first audio**. Mapping
+the whole path — mic worklet → browser WS → backend proxy → APIM → Foundry (VAD → ASR → agent →
+TTS) → audio deltas back → playback — these are the levers, highest-impact first:
+
+| Lever | Where | Impact | How |
+|-------|-------|--------|-----|
+| **VAD end-of-turn silence** | Foundry (agent) / backend `session.update` | **~200–300 ms/turn** | Lower the silence the VAD waits after you stop talking. Set `VAD_SILENCE_MS` (e.g. 200). Model mode applies it directly; agent mode via `VAD_APPLY_AGENT=true` or on the agent itself. **The single biggest perceived-latency win** — most people never touch it. |
+| **No per-message deflate** | `backend/app.py` | CPU/jitter on audio stream | `compression=None` on the upstream `websockets.connect` **and** `ws_per_message_deflate=False` on uvicorn. Real-time PCM is a steady stream of small frames; deflating each adds CPU + buffering for negligible size win. **Now on by default.** |
+| **Mic uplink batching** | `web/pcm-worklet.js` | ~188 → ~50 msgs/sec | The worklet fires every 128 samples (~5.3 ms); we now batch **~20 ms** per WS frame (`micBatchMs`). ~4× fewer JSON+base64 encodes on the browser and per-frame handling in the proxy → less GC jitter under load, ≤20 ms added buffering. |
+| **Warm, reused socket** | `web/app.js` | hides ~1.3 s connect | One socket per session, pre-warmed on intent (see above). |
+| **APIM SKU / capacity** | infra | tail (p95) | BasicV2 cap 1 causes the 1.6–3.2 s connect outliers. StandardV2 or +1 unit pulls p95 in. |
+| **Co-location** | infra | RTT per hop | Browser ↔ APIM ↔ Foundry all in one region (Sweden Central here). Every extra region hop is added RTT on every frame. |
+
+**Notes on tuning `VAD_SILENCE_MS`:** it trades latency for interruption safety. 200 ms feels snappy
+but may clip users who pause mid-thought; 400–500 ms is safer for slow/deliberate speech. Tune to the
+audience. `azure_semantic_vad` (`VAD_TYPE`) ends the turn on *meaning* rather than a fixed silence and
+can feel faster still. All knobs live in `.env` (see `.env.example`) / `web/config.js` (`micBatchMs`).
+
+**What we did *not* touch:** playback runs a near-zero jitter buffer (chunks scheduled back-to-back
+from `playCtx.currentTime`) and barge-in cancels queued audio immediately on `speech_started` — both
+already latency-optimal. The dominant residual is **model generation** (~1–1.6 s), which is intrinsic
+to the model, identical on both paths, and not something the gateway or proxy can shave.

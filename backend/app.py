@@ -74,6 +74,41 @@ MODEL_MODE_INSTRUCTIONS = (
 )
 MODEL_MODE_VOICE = (os.environ.get("MODEL_MODE_VOICE") or "").strip()
 
+# --- Turn detection / VAD tuning (OPTIONAL) — the #1 *perceived* latency lever ---
+# After the user stops speaking, server VAD waits `silence_duration_ms` of silence
+# before ending the turn and asking the model to respond. That wait is dead air the
+# user feels on EVERY turn. Lowering it (e.g. 500 -> 200 ms) shaves that much off
+# perceived response time (at the cost of more false end-of-turns if set too low).
+# Model mode always sends turn_detection (it has no agent). Agent mode leaves turn
+# detection to the Foundry agent UNLESS VAD_APPLY_AGENT=true, so defaults are unchanged.
+VAD_TYPE = (os.environ.get("VAD_TYPE") or "server_vad").strip()          # server_vad | azure_semantic_vad
+VAD_SILENCE_MS = os.environ.get("VAD_SILENCE_MS")                        # e.g. 200
+VAD_PREFIX_PADDING_MS = os.environ.get("VAD_PREFIX_PADDING_MS")          # e.g. 200
+VAD_THRESHOLD = os.environ.get("VAD_THRESHOLD")                          # 0.0-1.0, e.g. 0.5
+VAD_APPLY_AGENT = (os.environ.get("VAD_APPLY_AGENT") or "").strip().lower() in ("1", "true", "yes")
+
+
+def _build_turn_detection() -> dict | None:
+    """Build a `turn_detection` object from the VAD_* env, or None if nothing is set."""
+    td: dict = {"type": VAD_TYPE}
+    if VAD_THRESHOLD:
+        try:
+            td["threshold"] = float(VAD_THRESHOLD)
+        except ValueError:
+            pass
+    if VAD_PREFIX_PADDING_MS:
+        try:
+            td["prefix_padding_ms"] = int(VAD_PREFIX_PADDING_MS)
+        except ValueError:
+            pass
+    if VAD_SILENCE_MS:
+        try:
+            td["silence_duration_ms"] = int(VAD_SILENCE_MS)
+        except ValueError:
+            pass
+    # Only meaningful if we actually tuned something beyond the bare type.
+    return td if len(td) > 1 else {"type": VAD_TYPE}
+
 
 def _build_voice(mode: str) -> dict | None:
     """Build the Voice Live `voice` object for a session, or None to keep the default.
@@ -114,7 +149,11 @@ def _server_session_update(mode: str) -> dict | None:
     if mode == "model":
         session["modalities"] = ["text", "audio"]
         session["instructions"] = MODEL_MODE_INSTRUCTIONS
-        session["turn_detection"] = {"type": "server_vad"}
+        session["turn_detection"] = _build_turn_detection()
+    elif VAD_APPLY_AGENT and (VAD_SILENCE_MS or VAD_PREFIX_PADDING_MS or VAD_THRESHOLD):
+        # Agent mode: only override the agent's own VAD when explicitly opted in,
+        # so default agent-mode behavior stays byte-for-byte unchanged.
+        session["turn_detection"] = _build_turn_detection()
     if not session:
         return None
     return {"type": "session.update", "session": session}
@@ -373,7 +412,10 @@ async def _proxy(client: WebSocket, mode: str, upstream_url: str):
 
         connect_t0 = time.perf_counter()
         try:
-            upstream = await websockets.connect(upstream_url, max_size=None)
+            # compression=None disables per-message deflate: real-time PCM audio is a
+            # steady stream of small frames, and deflating each one adds CPU + buffering
+            # latency for little size win. Turning it off trims the audio hot path.
+            upstream = await websockets.connect(upstream_url, max_size=None, compression=None)
         except Exception as exc:  # upstream handshake failed
             span.record_exception(exc)
             span.set_status(trace.Status(trace.StatusCode.ERROR, "upstream connect failed"))
@@ -523,4 +565,7 @@ if __name__ == "__main__":
         app,
         host=os.environ.get("BACKEND_HOST", "127.0.0.1"),
         port=int(os.environ.get("BACKEND_PORT", "8000")),
+        # Disable per-message deflate on the browser-facing socket too: the downlink
+        # carries base64 TTS audio deltas — skip per-frame compression to cut latency.
+        ws_per_message_deflate=False,
     )
