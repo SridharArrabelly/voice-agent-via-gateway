@@ -1,6 +1,6 @@
 # Voice Live latency — APIM gateway vs direct SDK (same agent)
 
-- Generated (UTC): `2026-07-17T14:10:18.330603+00:00`  ·  iterations per run: **6**
+- Generated (UTC): `2026-07-17T17:42:55.272938+00:00`  ·  iterations per run: **6**
 - Agent: `voice-mode-agent` / project `foundry-showcase` (model gpt-5.4-mini, no model sent)
 - APIM api-version `2026-04-10` · SDK api-version `2026-01-01-preview`
 
@@ -19,3 +19,21 @@ All times in ms (median across iterations).
 |----------|--------:|--------:|------:|-----:|
 | voice | +355.5 | -46.2 | -566.1 | -604.1 |
 | text | +275.4 | -68.9 | +170.9 | +134.4 |
+
+## Reading the `connect` metric
+
+`connect` = TLS + WebSocket handshake to a ready socket. It splits into:
+
+- **~0.9 s Foundry Voice Live handshake** (realtime session alloc + agent load) — the
+  Direct-SDK floor, paid on both paths and inherent to Voice Live.
+- **~0.3 s APIM hop** (2nd TLS + WS upgrade to Foundry + cached managed-identity token).
+
+It is a **one-time, per-session** cost — not per turn. Per-turn latency is `first`/`done`
+(dominated by model generation, equal within noise on both paths). The browser client
+hides `connect` by **pre-warming the socket on intent** (hover/focus/press of *Connect*)
+and starting the mic in parallel on the click. See
+[docs/benchmarks.md](../docs/benchmarks.md) for the full analysis.
+
+> The Direct-SDK credential is cached in-process by `bench.py`; without that,
+> `AzureCliCredential` re-shells `az` on every connect and inflates Direct `connect` by
+> 1–3 s, which previously made APIM look *faster* on connect. That was an artifact.

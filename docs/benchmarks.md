@@ -72,36 +72,61 @@ uv run python scripts/bench.py 6
 
 | # | Path | Modality | connect | session | first | done | e2e |
 |--:|------|----------|--------:|--------:|------:|-----:|----:|
-| 1 | APIM | voice | 1139 | 170 | 1631 | 1679 | 3045 |
-| 2 | APIM | text | 1119 | 172 | 1276 | 1457 | 2747 |
-| 3 | Direct SDK | voice | 2192 | 223 | 1440 | 1636 | 4158 |
-| 4 | Direct SDK | text | 2421 | 199 | 1115 | 1309 | 4410 |
+| 1 | APIM | voice | 1338 | 160 | 1599 | 1767 | 3342 |
+| 2 | APIM | text | 1132 | 131 | 1306 | 1489 | 2791 |
+| 3 | Direct SDK | voice | 983 | 207 | 2165 | 2371 | 3574 |
+| 4 | Direct SDK | text | 856 | 200 | 1135 | 1355 | 2561 |
 
 **APIM overhead vs direct SDK (median APIM − median Direct):**
 
 | Modality | connect | session | first | done |
 |----------|--------:|--------:|------:|-----:|
-| voice | **−1053** | −53 | +191 | +43 |
-| text | **−1302** | −27 | +161 | +148 |
+| voice | **+356** | −46 | −566* | −604* |
+| text | **+275** | −69 | +171 | +134 |
+
+<sub>*The voice `first`/`done` deltas are within run-to-run noise (a couple of Direct-voice
+iterations had 3–4 s model generations that skew the Direct median upward). Treat per-turn
+deltas as ≈0 ± noise — see below.</sub>
+
+> **⚠️ Corrected baseline (2026-07):** earlier runs of this table showed APIM `connect` as
+> **~1 s *faster*** than Direct. That was a **measurement artifact**, not reality: the Direct
+> SDK path used `AzureCliCredential`, which **shells out to `az` on every `connect()`** to
+> fetch an Entra token (1–3 s, sometimes timing out). `bench.py` now **caches the token
+> in-process** (representative of a real app using a cached/managed-identity credential), so
+> `connect` reflects the actual TLS + WebSocket handshake. Under that apples-to-apples
+> comparison APIM is a **small, honest ~0.3 s slower on connect** — the expected cost of a
+> second TLS + WS upgrade hop.
+
+**Connect decomposition (where the ~1.3 s goes):**
+
+| Component | ~ms | Reducible? |
+|-----------|----:|------------|
+| Foundry Voice Live handshake (realtime session alloc + agent load) — the Direct floor | **~0.9 s** | No (inherent to Voice Live) |
+| APIM hop (2nd TLS + WS upgrade to Foundry + cached MI token) | **~0.3 s** | Mostly no; already minimal |
 
 **Conclusion — APIM is *not* the bottleneck:**
 
-- **Connect is ~1 s *faster* through APIM.** The raw-WS APIM path authenticates with a
-  subscription key and APIM injects a *cached* managed-identity token server-side, while the
-  direct SDK pays Entra token acquisition + client init on every connect. So "direct" is not
-  automatically faster.
-- **The extra proxy hop adds ~+0.2 s to first-token / turn-completion** — a real but modest
-  per-turn cost, small next to the model's ~1–1.6 s generation time.
-- **End-to-end, APIM is lower** (voice 3045 vs 4158 ms; text 2747 vs 4410 ms)
-  because the faster connect offsets the small streaming delta.
-- There is **no APIM token/rate-limit policy** throttling the agent path — the `voice-agent`
-  API has no limit policy.
+- **`connect` ≈ 0.9 s Foundry floor + ~0.3 s APIM.** The bulk is Foundry allocating the
+  realtime session and loading the agent — paid on the Direct path too. APIM's real cost is a
+  one-time ~0.3 s.
+- **Per-turn (`first`/`done`) is dominated by model generation** (~1–1.6 s) and is the *same*
+  within noise on both paths — the proxy hop adds ≈0 per turn.
+- **`connect` is a one-time, per-session cost, not per-turn.** In the browser one WebSocket
+  serves the whole conversation; the bench reconnects each iteration (worst case).
+- There is **no APIM token/rate-limit policy** throttling the agent path.
 
-**What to tell the customer:** the dominant latency is **model generation**, essentially
-identical on both paths. If a perceived slowdown remains, look at (1) reconnecting per turn
-instead of reusing a warm WebSocket, and (2) the model **deployment TPM** (gpt-5.4-mini is
-at 750k) — not an APIM policy.
+**How to make `connect` disappear from perceived latency:**
 
-> Handshake decomposition (`scripts/bench_connect.py`) confirms this: the ~1s connect is
-> mostly network TCP+TLS to the region (paid by the direct path too); APIM adds only
-> ~200 ms **one-time** and **≈0 per turn**. Per-turn ttfr is identical with or without APIM.
+1. **Reuse one warm socket per session** (never reconnect per turn) — already how the browser
+   UI works.
+2. **Pre-open the socket on intent.** The browser client (`web/app.js`) **pre-warms** the
+   WebSocket on hover/focus/press of *Connect* and starts the mic **in parallel** on the
+   click, so the ~1.3 s handshake overlaps the user reaching for the button instead of being
+   waited on afterwards.
+3. **Tighten the tail, not the median.** Occasional 1.6–3.2 s connects come from **BasicV2 at
+   capacity 1** under contention; a second scale unit (or StandardV2) pulls p95 in.
+4. Keep client, APIM and Foundry **co-located** (all Sweden Central here).
+
+> Handshake decomposition (`scripts/bench_connect.py`) confirms the split: most of the connect
+> is TCP+TLS+session setup paid by the direct path too; APIM adds only ~0.3 s **one-time** and
+> **≈0 per turn**.

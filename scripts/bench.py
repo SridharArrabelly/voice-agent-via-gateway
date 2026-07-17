@@ -270,6 +270,27 @@ def write_reports(results: dict, iters: int):
             row.append(f"{am - sm:+.1f}" if (am is not None and sm is not None) else "n/a")
         lines.append(f"| {row[0]} | {row[1]} | {row[2]} | {row[3]} | {row[4]} |")
 
+    lines += [
+        "",
+        "## Reading the `connect` metric",
+        "",
+        "`connect` = TLS + WebSocket handshake to a ready socket. It splits into:",
+        "",
+        "- **~0.9 s Foundry Voice Live handshake** (realtime session alloc + agent load) — the",
+        "  Direct-SDK floor, paid on both paths and inherent to Voice Live.",
+        "- **~0.3 s APIM hop** (2nd TLS + WS upgrade to Foundry + cached managed-identity token).",
+        "",
+        "It is a **one-time, per-session** cost — not per turn. Per-turn latency is `first`/`done`",
+        "(dominated by model generation, equal within noise on both paths). The browser client",
+        "hides `connect` by **pre-warming the socket on intent** (hover/focus/press of *Connect*)",
+        "and starting the mic in parallel on the click. See",
+        "[docs/benchmarks.md](../docs/benchmarks.md) for the full analysis.",
+        "",
+        "> The Direct-SDK credential is cached in-process by `bench.py`; without that,",
+        "> `AzureCliCredential` re-shells `az` on every connect and inflates Direct `connect` by",
+        "> 1–3 s, which previously made APIM look *faster* on connect. That was an artifact.",
+    ]
+
     (RESULTS_DIR / "bench-matrix.md").write_text("\n".join(lines), encoding="utf-8")
     print(f"\nWrote {RESULTS_DIR / 'bench-matrix.md'} and bench-matrix.json")
 

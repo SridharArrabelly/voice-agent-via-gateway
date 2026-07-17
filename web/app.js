@@ -35,7 +35,7 @@
     }
   }).catch(() => {});
 
-  let ws = null, audioCtx = null, workletNode = null, micStream = null, source = null;
+  let audioCtx = null, workletNode = null, micStream = null, source = null;
   let playCtx = null, playHead = 0, activeSources = [];
   let curAgentMsg = null, curUserMsg = null;
   let turnAudioStarted = false; // reset per agent turn; gates the first-audio mark
@@ -132,93 +132,162 @@
   }
 
   // ---- websocket ----
-  function connect() {
+  // The gateway/Foundry handshake costs ~1.3 s (a one-time, per-session cost — see
+  // docs/benchmarks.md). To hide it, we *pre-warm* the socket the moment the user
+  // shows intent (hover/focus/press on Connect) and start the mic in PARALLEL with
+  // the socket on the actual click. getUserMedia needs a user gesture so it stays on
+  // the click; the WebSocket does not, so it can open early.
+  let ws = null;        // current socket (prewarmed or live)
+  let wsMode = null;    // the mode the current socket was opened for
+  let wsReady = null;   // Promise that resolves when the current socket is OPEN
+  let isLive = false;   // true once the mic is streaming
+
+  function handleServerMessage(ev) {
+    let m; try { m = JSON.parse(ev.data); } catch { return; }
+    switch (m.type) {
+      case "session.created":
+      case "session.updated":
+        break;
+      case "input_audio_buffer.speech_started":
+        stopPlayback(); // barge-in
+        if (turnAudioStarted) mark("barge_in"); // user cut in over agent audio
+        curAgentMsg = null;
+        turnAudioStarted = false;
+        break;
+      case "input_audio_buffer.speech_stopped":
+        mark("speech_stopped"); // user finished — clock starts for mouth-to-ear
+        break;
+      case "conversation.item.input_audio_transcription.completed":
+        if (m.transcript) addMsg("user", "You", m.transcript.trim());
+        break;
+      case "response.audio.delta":
+        if (m.delta) {
+          if (!turnAudioStarted) { turnAudioStarted = true; mark("first_audio_played"); }
+          playChunk(b64ToInt16(m.delta));
+        }
+        break;
+      case "response.audio_transcript.delta":
+      case "response.text.delta":
+        if (!curAgentMsg) curAgentMsg = addMsg("agent", "Agent", "");
+        curAgentMsg.textContent += m.delta || "";
+        logEl.scrollTop = logEl.scrollHeight;
+        break;
+      case "response.done":
+        curAgentMsg = null;
+        turnAudioStarted = false;
+        break;
+      case "error":
+        sys("Server error: " + JSON.stringify(m.error || m));
+        break;
+    }
+  }
+
+  function attachSocketHandlers(socket) {
+    socket.onmessage = handleServerMessage;
+    socket.onerror = () => { if (socket === ws) setStatus("Connection error", "error"); };
+    socket.onclose = (e) => {
+      if (socket !== ws) return; // a stale/replaced socket closing — ignore
+      const wasLive = isLive;
+      ws = null; wsReady = null; wsMode = null; isLive = false;
+      if (wasLive) {
+        setStatus("Disconnected" + (e.code && e.code !== 1000 ? ` (code ${e.code})` : ""), "idle");
+        cleanup();
+      } else {
+        // A prewarmed socket dropped (e.g. idle timeout) before going live: reset
+        // quietly; the next hover/click will re-warm.
+        setStatus("Idle", "idle");
+        connectBtn.disabled = false;
+      }
+    };
+  }
+
+  // Open (or reuse) a socket for `mode` WITHOUT starting the mic. Returns a Promise
+  // that resolves to the open socket. Reuses an existing prewarmed socket for the
+  // same mode; discards a stale socket opened for a different mode.
+  function openSocket(mode) {
+    if (ws && wsMode === mode &&
+        (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) {
+      return wsReady;
+    }
+    if (ws) { try { ws.close(1000); } catch {} }
+    const url = wsBase + routeForMode(mode);
+    const socket = new WebSocket(url);
+    ws = socket; wsMode = mode;
+    wsReady = new Promise((resolve, reject) => {
+      socket.addEventListener("open", () => {
+        // Configure the realtime session up-front (safe before the mic exists).
+        // For a custom agent keep this MINIMAL — the agent's own metadata drives
+        // voice, VAD and transcription; audio defaults are already PCM16 @ 24 kHz.
+        try { socket.send(JSON.stringify({ type: "session.update", session: { modalities: ["text", "audio"] } })); } catch {}
+        resolve(socket);
+      }, { once: true });
+      socket.addEventListener("error", () => reject(new Error("socket error")), { once: true });
+    });
+    attachSocketHandlers(socket);
+    return wsReady;
+  }
+
+  // Pre-warm on intent: opens the socket ahead of the click so the ~1.3 s handshake
+  // overlaps the user reaching for the button. Idempotent and cheap.
+  function prewarm() {
+    if (isLive) return;
+    const mode = selectedMode();
+    if (ws && wsMode === mode &&
+        (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) return;
+    setStatus("Preparing…", "connecting");
+    $("gwPill").textContent = `mode: ${mode} · ${wsBase + routeForMode(mode)}`;
+    openSocket(mode)
+      .then(() => { if (!isLive) setStatus("Ready — click Connect", "connecting"); })
+      .catch(() => { /* swallow; the click will retry */ });
+  }
+
+  // Go live: reuse the prewarmed socket (or open now) AND start the mic in parallel.
+  async function goLive() {
+    if (isLive) return;
     connectBtn.disabled = true;
     setModeEnabled(false);
+    isLive = true;
     const mode = selectedMode();
-    const backendWsUrl = wsBase + routeForMode(mode);
-    $("gwPill").textContent = `mode: ${mode} · ${backendWsUrl}`;
+    $("gwPill").textContent = `mode: ${mode} · ${wsBase + routeForMode(mode)}`;
     setStatus("Connecting…", "connecting");
-    ws = new WebSocket(backendWsUrl);
-
-    ws.onopen = async () => {
-      setStatus("Connected · starting mic…", "connecting");
-      // Configure the realtime session. Do NOT send instructions/voice for a
-      // Configure the realtime session. For a custom agent, keep this MINIMAL — the
-      // agent's own metadata drives voice, VAD and transcription. Overriding
-      // input_audio_transcription.model (e.g. whisper-1) is rejected; audio defaults
-      // are already PCM16 @ 24 kHz, matching our capture.
-      ws.send(JSON.stringify({
-        type: "session.update",
-        session: { modalities: ["text", "audio"] }
-      }));
-      try {
-        initPlayback();
-        await startMic();
-        setStatus("Live · speak now", "live");
-        stopBtn.disabled = false;
-        sys("Connected. Start talking — the agent replies with voice.");
-      } catch (err) {
-        sys("Mic error: " + err.message); disconnect();
-      }
-    };
-
-    ws.onmessage = (ev) => {
-      let m; try { m = JSON.parse(ev.data); } catch { return; }
-      switch (m.type) {
-        case "session.created":
-        case "session.updated":
-          break;
-        case "input_audio_buffer.speech_started":
-          stopPlayback(); // barge-in
-          if (turnAudioStarted) mark("barge_in"); // user cut in over agent audio
-          curAgentMsg = null;
-          turnAudioStarted = false;
-          break;
-        case "input_audio_buffer.speech_stopped":
-          mark("speech_stopped"); // user finished — clock starts for mouth-to-ear
-          break;
-        case "conversation.item.input_audio_transcription.completed":
-          if (m.transcript) addMsg("user", "You", m.transcript.trim());
-          break;
-        case "response.audio.delta":
-          if (m.delta) {
-            if (!turnAudioStarted) { turnAudioStarted = true; mark("first_audio_played"); }
-            playChunk(b64ToInt16(m.delta));
-          }
-          break;
-        case "response.audio_transcript.delta":
-        case "response.text.delta":
-          if (!curAgentMsg) curAgentMsg = addMsg("agent", "Agent", "");
-          curAgentMsg.textContent += m.delta || "";
-          logEl.scrollTop = logEl.scrollHeight;
-          break;
-        case "response.done":
-          curAgentMsg = null;
-          turnAudioStarted = false;
-          break;
-        case "error":
-          sys("Server error: " + JSON.stringify(m.error || m));
-          break;
-      }
-    };
-
-    ws.onerror = () => setStatus("Connection error", "error");
-    ws.onclose = (e) => {
-      setStatus("Disconnected" + (e.code && e.code !== 1000 ? ` (code ${e.code})` : ""), "idle");
-      cleanup();
-    };
+    try {
+      initPlayback();
+      // Socket may already be OPEN from prewarm(); mic must start on this gesture.
+      const socketP = openSocket(mode);
+      const micP = startMic();
+      await Promise.all([socketP, micP]);
+      setStatus("Live · speak now", "live");
+      stopBtn.disabled = false;
+      sys("Connected. Start talking — the agent replies with voice.");
+    } catch (err) {
+      isLive = false;
+      sys("Connection/mic error: " + (err && err.message ? err.message : String(err)));
+      disconnect();
+    }
   }
 
   function disconnect() { if (ws) try { ws.close(1000); } catch {}; cleanup(); }
   function cleanup() {
     stopMic(); stopPlayback();
     if (playCtx) { try { playCtx.close(); } catch {} playCtx = null; }
-    ws = null;
+    ws = null; wsReady = null; wsMode = null; isLive = false;
     connectBtn.disabled = false; stopBtn.disabled = true;
     setModeEnabled(true);
   }
 
-  connectBtn.onclick = connect;
+  connectBtn.onclick = goLive;
   stopBtn.onclick = () => { sys("Ended."); disconnect(); setStatus("Disconnected", "idle"); };
+
+  // Pre-warm triggers: the earliest signals of intent. Hover/focus/press all open
+  // the socket ahead of the click so session startup is hidden from the user.
+  ["pointerenter", "focus", "pointerdown"].forEach((evt) => connectBtn.addEventListener(evt, prewarm));
+  // If the user switches mode before going live, the prewarmed socket is for the
+  // wrong route — discard it and warm the new one.
+  document.querySelectorAll('input[name="mode"]').forEach((r) => {
+    r.addEventListener("change", () => {
+      if (isLive) return;
+      if (ws && wsMode !== selectedMode()) { try { ws.close(1000); } catch {} ws = null; wsReady = null; wsMode = null; }
+      prewarm();
+    });
+  });
 })();
